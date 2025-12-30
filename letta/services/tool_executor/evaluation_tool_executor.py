@@ -63,16 +63,16 @@ class LettaEvaluationToolExecutor(ToolExecutor):
         actor: User,
         system_prompt: str,
         user_message: str,
-        model: str = "claude-3-5-haiku-20241022",
+        model: str = "claude-sonnet-4-5-20250929",
     ) -> str:
         """
         Make a simple LLM call for evaluation purposes.
-        Uses Claude Haiku by default for fast, cheap evaluations.
+        Uses Claude Sonnet 4.5 by default for fast, accurate evaluations.
         """
         from letta.llm_api.llm_client import LLMClient
         from letta.schemas.enums import ProviderType
 
-        # Create LLM config for evaluation (using Haiku for speed/cost)
+        # Create LLM config for evaluation (using Sonnet 4.5 for speed/accuracy)
         llm_config = LLMConfig(
             model=model,
             model_endpoint_type=ProviderType.anthropic,
