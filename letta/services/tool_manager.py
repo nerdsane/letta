@@ -1165,7 +1165,7 @@ class ToolManager:
                 tags=[tool_type.value],
                 source_type="python",
                 tool_type=tool_type,
-                json_schema=schema,
+                json_schema=schema["json_schema"],
                 return_char_limit=BASE_FUNCTION_RETURN_CHAR_LIMIT,
                 enable_parallel_execution=parallel_safe,
             )
