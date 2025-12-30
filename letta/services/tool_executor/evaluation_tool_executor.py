@@ -77,6 +77,7 @@ class LettaEvaluationToolExecutor(ToolExecutor):
             model=model,
             model_endpoint_type=ProviderType.anthropic,
             model_endpoint="https://api.anthropic.com/v1",
+            context_window=200000,  # Claude Sonnet 4.5 context window
         )
 
         # Create Anthropic client
@@ -146,13 +147,24 @@ Please evaluate the content against the rubric and return your assessment as JSO
 
         # Parse and validate JSON
         try:
-            result = json.loads(response_text)
+            # Extract JSON from response (handle markdown code blocks)
+            json_text = response_text.strip()
+
+            # Remove markdown code blocks if present
+            if json_text.startswith("```"):
+                # Find the first { and last }
+                start_idx = json_text.find("{")
+                end_idx = json_text.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    json_text = json_text[start_idx : end_idx + 1]
+
+            result = json.loads(json_text)
             # Ensure required fields exist
             required_fields = ["score", "reasoning", "strengths", "improvements", "meets_criteria"]
             if not all(field in result for field in required_fields):
                 raise ValueError("Missing required fields in evaluation response")
             return json.dumps(result, indent=2)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             logger.error(f"Failed to parse evaluation response as JSON: {response_text}")
             # Return a fallback structure
             return json.dumps(
@@ -163,6 +175,7 @@ Please evaluate the content against the rubric and return your assessment as JSO
                     "improvements": ["Evaluation system error"],
                     "meets_criteria": False,
                     "raw_response": response_text,
+                    "parse_error": str(e),
                 },
                 indent=2,
             )
@@ -215,12 +228,20 @@ Please analyze this content for logical contradictions and return your findings 
 
         # Parse and validate JSON
         try:
-            result = json.loads(response_text)
+            # Extract JSON from response (handle markdown code blocks)
+            json_text = response_text.strip()
+            if json_text.startswith("```"):
+                start_idx = json_text.find("{")
+                end_idx = json_text.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    json_text = json_text[start_idx : end_idx + 1]
+
+            result = json.loads(json_text)
             required_fields = ["consistent", "contradictions", "checks_performed"]
             if not all(field in result for field in required_fields):
                 raise ValueError("Missing required fields in consistency check response")
             return json.dumps(result, indent=2)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             logger.error(f"Failed to parse consistency check response as JSON: {response_text}")
             return json.dumps(
                 {
@@ -229,6 +250,7 @@ Please analyze this content for logical contradictions and return your findings 
                     "checks_performed": 0,
                     "error": "Failed to parse response",
                     "raw_response": response_text,
+                    "parse_error": str(e),
                 },
                 indent=2,
             )
@@ -277,12 +299,20 @@ Please compare these versions and return your assessment as JSON."""
 
         # Parse and validate JSON
         try:
-            result = json.loads(response_text)
+            # Extract JSON from response (handle markdown code blocks)
+            json_text = response_text.strip()
+            if json_text.startswith("```"):
+                start_idx = json_text.find("{")
+                end_idx = json_text.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    json_text = json_text[start_idx : end_idx + 1]
+
+            result = json.loads(json_text)
             required_fields = ["improved", "changes", "better_aspects", "worse_aspects", "recommendation"]
             if not all(field in result for field in required_fields):
                 raise ValueError("Missing required fields in version comparison response")
             return json.dumps(result, indent=2)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             logger.error(f"Failed to parse version comparison response as JSON: {response_text}")
             return json.dumps(
                 {
@@ -293,6 +323,7 @@ Please compare these versions and return your assessment as JSON."""
                     "recommendation": "iterate_more",
                     "error": "Failed to parse response",
                     "raw_response": response_text,
+                    "parse_error": str(e),
                 },
                 indent=2,
             )
@@ -340,12 +371,20 @@ Please analyze the information gain and return your assessment as JSON."""
 
         # Parse and validate JSON
         try:
-            result = json.loads(response_text)
+            # Extract JSON from response (handle markdown code blocks)
+            json_text = response_text.strip()
+            if json_text.startswith("```"):
+                start_idx = json_text.find("{")
+                end_idx = json_text.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    json_text = json_text[start_idx : end_idx + 1]
+
+            result = json.loads(json_text)
             required_fields = ["information_gain", "new_facts", "insights", "significance"]
             if not all(field in result for field in required_fields):
                 raise ValueError("Missing required fields in information gain response")
             return json.dumps(result, indent=2)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             logger.error(f"Failed to parse information gain response as JSON: {response_text}")
             return json.dumps(
                 {
@@ -355,6 +394,7 @@ Please analyze the information gain and return your assessment as JSON."""
                     "significance": "trivial",
                     "error": "Failed to parse response",
                     "raw_response": response_text,
+                    "parse_error": str(e),
                 },
                 indent=2,
             )
