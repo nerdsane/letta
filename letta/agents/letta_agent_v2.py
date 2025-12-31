@@ -927,6 +927,19 @@ class LettaAgentV2(BaseAgentV2):
             self.usage.cache_write_tokens = (self.usage.cache_write_tokens or 0) + step_usage_stats.cache_write_tokens
         if step_usage_stats.reasoning_tokens is not None:
             self.usage.reasoning_tokens = (self.usage.reasoning_tokens or 0) + step_usage_stats.reasoning_tokens
+        # Aggregate cost fields (handle None values)
+        if step_usage_stats.input_cost is not None:
+            self.usage.input_cost = (self.usage.input_cost or 0) + step_usage_stats.input_cost
+        if step_usage_stats.output_cost is not None:
+            self.usage.output_cost = (self.usage.output_cost or 0) + step_usage_stats.output_cost
+        if step_usage_stats.cached_input_cost is not None:
+            self.usage.cached_input_cost = (self.usage.cached_input_cost or 0) + step_usage_stats.cached_input_cost
+        if step_usage_stats.cache_write_cost is not None:
+            self.usage.cache_write_cost = (self.usage.cache_write_cost or 0) + step_usage_stats.cache_write_cost
+        if step_usage_stats.reasoning_cost is not None:
+            self.usage.reasoning_cost = (self.usage.reasoning_cost or 0) + step_usage_stats.reasoning_cost
+        if step_usage_stats.total_cost is not None:
+            self.usage.total_cost = (self.usage.total_cost or 0) + step_usage_stats.total_cost
 
     @trace_method
     async def _handle_ai_response(

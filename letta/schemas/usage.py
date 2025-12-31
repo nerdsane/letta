@@ -102,6 +102,12 @@ class LettaUsageStatistics(BaseModel):
         cached_input_tokens (Optional[int]): The number of input tokens served from cache. None if not reported.
         cache_write_tokens (Optional[int]): The number of input tokens written to cache. None if not reported.
         reasoning_tokens (Optional[int]): The number of reasoning/thinking tokens generated. None if not reported.
+        input_cost (Optional[float]): Cost for input tokens in USD. None if pricing unavailable.
+        output_cost (Optional[float]): Cost for output tokens in USD. None if pricing unavailable.
+        cached_input_cost (Optional[float]): Cost for cached input in USD. None if pricing unavailable.
+        cache_write_cost (Optional[float]): Cost for cache writes in USD. None if pricing unavailable.
+        reasoning_cost (Optional[float]): Cost for reasoning tokens in USD. None if pricing unavailable.
+        total_cost (Optional[float]): Total cost for this step in USD. None if pricing unavailable.
     """
 
     message_type: Literal["usage_statistics"] = "usage_statistics"
@@ -126,3 +132,18 @@ class LettaUsageStatistics(BaseModel):
     reasoning_tokens: Optional[int] = Field(
         None, description="The number of reasoning/thinking tokens generated. None if not reported by provider."
     )
+
+    # Cost tracking (optional, populated if pricing data available)
+    # None means pricing data unavailable or costs not calculated
+    input_cost: Optional[float] = Field(None, description="Cost for input tokens in USD. None if pricing unavailable.")
+    output_cost: Optional[float] = Field(None, description="Cost for output tokens in USD. None if pricing unavailable.")
+    cached_input_cost: Optional[float] = Field(
+        None, description="Cost for cached input tokens in USD. None if pricing unavailable or no cache reads."
+    )
+    cache_write_cost: Optional[float] = Field(
+        None, description="Cost for cache writes in USD (Anthropic only). None if pricing unavailable or no cache writes."
+    )
+    reasoning_cost: Optional[float] = Field(
+        None, description="Cost for reasoning tokens in USD. None if pricing unavailable or no reasoning tokens."
+    )
+    total_cost: Optional[float] = Field(None, description="Total cost for this step in USD. None if pricing unavailable.")

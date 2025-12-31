@@ -6,6 +6,7 @@ from letta.interfaces.anthropic_streaming_interface import AnthropicStreamingInt
 from letta.interfaces.openai_streaming_interface import OpenAIStreamingInterface
 from letta.llm_api.llm_client_base import LLMClientBase
 from letta.otel.tracing import log_attributes, safe_json_dumps, trace_method
+from letta.pricing import PricingService
 from letta.schemas.enums import ProviderType
 from letta.schemas.letta_message import LettaMessage
 from letta.schemas.llm_config import LLMConfig
@@ -162,6 +163,9 @@ class LettaLLMStreamAdapter(LettaLLMAdapter):
         else:
             # Default usage statistics if not available
             self.usage = LettaUsageStatistics(step_count=1, completion_tokens=0, prompt_tokens=0, total_tokens=0)
+
+        # Calculate costs using PricingService
+        self.usage = PricingService.calculate_cost(self.usage, self.llm_config.model)
 
         # Store any additional data from the interface
         self.message_id = self.interface.letta_message_id
