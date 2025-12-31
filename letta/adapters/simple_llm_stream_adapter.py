@@ -210,6 +210,11 @@ class SimpleLLMStreamAdapter(LettaLLMStreamAdapter):
             # Default usage statistics if not available
             self.usage = LettaUsageStatistics(step_count=1, completion_tokens=0, prompt_tokens=0, total_tokens=0)
 
+        # Calculate costs using PricingService
+        from letta.pricing import PricingService
+
+        self.usage = PricingService.calculate_cost(self.usage, self.llm_config.model)
+
         # Store any additional data from the interface
         self.message_id = self.interface.letta_message_id
 
