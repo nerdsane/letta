@@ -570,6 +570,7 @@ async def search_trajectories(
     query: str,
     min_score: Optional[float] = 0.5,
     limit: int = 3,
+    include_contrasts: bool = False,
 ) -> Optional[str]:
     """
     Search past execution experiences to find similar situations and learn from them.
@@ -591,8 +592,9 @@ async def search_trajectories(
 
     Args:
         query: Describe the situation or task you want to learn from (e.g., "how did I handle user requests for story generation with specific themes")
-        min_score: Only return trajectories with outcome quality >= this score (0-1). Default 0.5 filters for reasonably successful attempts.
-        limit: Maximum number of past experiences to retrieve (default: 3, max: 10)
+        min_score: Only return trajectories with outcome quality >= this score (0-1). Default 0.5 filters for reasonably successful attempts. Ignored if include_contrasts=True.
+        limit: Maximum number of past experiences to retrieve (default: 3, max: 10). If include_contrasts=True, returns this many successes AND this many failures.
+        include_contrasts: If True, returns both top successes (score >= 0.7) AND top failures (score <= 0.3) to compare what worked vs what didn't. Ignores min_score parameter.
 
     Returns:
         A list of relevant past execution experiences with summaries, outcome scores, and key details.
@@ -616,6 +618,13 @@ async def search_trajectories(
         search_trajectories(
             query="discussions about project roadmap and timeline",
             limit=2
+        )
+
+        # Compare successes vs failures side-by-side
+        search_trajectories(
+            query="generating science fiction stories",
+            limit=3,
+            include_contrasts=True  # Returns top 3 successes AND top 3 failures
         )
     """
     raise NotImplementedError("This should never be invoked directly. Contact Letta if you see this error message.")

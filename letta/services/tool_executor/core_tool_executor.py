@@ -325,6 +325,7 @@ class LettaCoreToolExecutor(ToolExecutor):
         query: str,
         min_score: Optional[float] = 0.5,
         limit: int = 3,
+        include_contrasts: bool = False,
     ) -> Optional[str]:
         """Search past execution experiences to learn from similar situations."""
         try:
@@ -336,54 +337,134 @@ class LettaCoreToolExecutor(ToolExecutor):
             from letta.server.rest_api.app import server
 
             # Ensure limit is reasonable
-            limit = min(limit, 10)  # Cap at 10 results
+            limit = min(limit, 10)  # Cap at 10 results per category
 
-            # Create search request
-            search_request = TrajectorySearchRequest(
-                query=query,
-                agent_id=agent_state.id,
-                min_score=min_score,
-                limit=limit,
-            )
+            if include_contrasts:
+                # Get both successes and failures for comparison
+                # Search for successes (high scores)
+                success_request = TrajectorySearchRequest(
+                    query=query,
+                    agent_id=agent_state.id,
+                    min_score=0.7,  # Successes only
+                    limit=limit,
+                )
+                success_results = await server.trajectory_manager.search_trajectories_async(
+                    search_request=success_request,
+                    actor=actor,
+                )
 
-            # Search trajectories using the manager
-            results = await server.trajectory_manager.search_trajectories_async(
-                search_request=search_request,
-                actor=actor,
-            )
+                # Search for failures (low scores)
+                # Note: We need to get low-scoring trajectories. The current search doesn't support max_score,
+                # so we'll get all (min_score=0.0) and filter for low scores client-side
+                failure_request = TrajectorySearchRequest(
+                    query=query,
+                    agent_id=agent_state.id,
+                    min_score=0.0,  # Get all
+                    limit=limit * 3,  # Get more to find failures
+                )
+                all_results = await server.trajectory_manager.search_trajectories_async(
+                    search_request=failure_request,
+                    actor=actor,
+                )
 
-            if not results or len(results) == 0:
-                return "No relevant past experiences found for this query."
+                # Filter for failures (score <= 0.3) and sort by similarity
+                failure_results = [r for r in all_results if r.trajectory.outcome_score is not None and r.trajectory.outcome_score <= 0.3]
+                failure_results = sorted(failure_results, key=lambda r: r.similarity, reverse=True)[:limit]
 
-            # Format results for the agent
-            formatted_results = []
-            for result in results:
-                trajectory = result.trajectory
-                similarity = result.similarity
+                if not success_results and not failure_results:
+                    return "No relevant past experiences found for this query."
 
-                # Extract key info from trajectory
-                result_dict = {
-                    "similarity": f"{similarity:.2f}",
-                    "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
-                    "summary": trajectory.searchable_summary or "No summary available",
+                # Format both successes and failures
+                response = {
+                    "message": f"Found {len(success_results)} successes and {len(failure_results)} failures for comparison:",
                 }
 
-                # Add metadata if available
-                if trajectory.data and "metadata" in trajectory.data:
-                    metadata = trajectory.data["metadata"]
-                    result_dict["details"] = {
-                        "status": metadata.get("status"),
-                        "tools_used": metadata.get("tools_used", []),
-                        "step_count": metadata.get("step_count"),
+                if success_results:
+                    response["successes"] = []
+                    for result in success_results:
+                        trajectory = result.trajectory
+                        similarity = result.similarity
+                        result_dict = {
+                            "similarity": f"{similarity:.2f}",
+                            "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                            "summary": trajectory.searchable_summary or "No summary available",
+                        }
+                        if trajectory.data and "metadata" in trajectory.data:
+                            metadata = trajectory.data["metadata"]
+                            result_dict["details"] = {
+                                "status": metadata.get("status"),
+                                "tools_used": metadata.get("tools_used", []),
+                                "step_count": metadata.get("step_count"),
+                            }
+                        response["successes"].append(result_dict)
+
+                if failure_results:
+                    response["failures"] = []
+                    for result in failure_results:
+                        trajectory = result.trajectory
+                        similarity = result.similarity
+                        result_dict = {
+                            "similarity": f"{similarity:.2f}",
+                            "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                            "summary": trajectory.searchable_summary or "No summary available",
+                        }
+                        if trajectory.data and "metadata" in trajectory.data:
+                            metadata = trajectory.data["metadata"]
+                            result_dict["details"] = {
+                                "status": metadata.get("status"),
+                                "tools_used": metadata.get("tools_used", []),
+                                "step_count": metadata.get("step_count"),
+                            }
+                        response["failures"].append(result_dict)
+
+                return response
+
+            else:
+                # Standard search with min_score filter
+                search_request = TrajectorySearchRequest(
+                    query=query,
+                    agent_id=agent_state.id,
+                    min_score=min_score,
+                    limit=limit,
+                )
+
+                results = await server.trajectory_manager.search_trajectories_async(
+                    search_request=search_request,
+                    actor=actor,
+                )
+
+                if not results or len(results) == 0:
+                    return "No relevant past experiences found for this query."
+
+                # Format results for the agent
+                formatted_results = []
+                for result in results:
+                    trajectory = result.trajectory
+                    similarity = result.similarity
+
+                    # Extract key info from trajectory
+                    result_dict = {
+                        "similarity": f"{similarity:.2f}",
+                        "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                        "summary": trajectory.searchable_summary or "No summary available",
                     }
 
-                formatted_results.append(result_dict)
+                    # Add metadata if available
+                    if trajectory.data and "metadata" in trajectory.data:
+                        metadata = trajectory.data["metadata"]
+                        result_dict["details"] = {
+                            "status": metadata.get("status"),
+                            "tools_used": metadata.get("tools_used", []),
+                            "step_count": metadata.get("step_count"),
+                        }
 
-            # Return structured results
-            return {
-                "message": f"Found {len(results)} relevant past experiences:",
-                "results": formatted_results,
-            }
+                    formatted_results.append(result_dict)
+
+                # Return structured results
+                return {
+                    "message": f"Found {len(results)} relevant past experiences:",
+                    "results": formatted_results,
+                }
 
         except Exception as e:
             # Log error but don't fail the agent
