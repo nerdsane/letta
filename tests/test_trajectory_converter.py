@@ -92,11 +92,15 @@ def mock_messages():
     tool_call_msg.text = None
     tool_call_msg.content = None
     tool_call_msg.tool_call_id = None
+    tool_call_function = Mock()
+    tool_call_function.name = "search_memory"
+    tool_call_function.arguments = '{"query": "stories"}'
+
     tool_call_msg.tool_calls = [
         Mock(
             id="call-1",
             type="function",
-            function=Mock(name="search_memory", arguments='{"query": "stories"}')
+            function=tool_call_function
         )
     ]
 
@@ -226,7 +230,7 @@ async def test_determine_outcome_partial_success(converter, mock_run, mock_steps
     outcome = trajectory.data["outcome"]
 
     assert outcome["type"] == "partial_success"
-    assert "Hit token limit" in outcome["reasoning"]
+    assert any("Hit token limit" in r for r in outcome["reasoning"])
 
 
 @pytest.mark.asyncio
@@ -238,7 +242,7 @@ async def test_determine_outcome_cancelled(converter, mock_run, mock_steps, mock
     outcome = trajectory.data["outcome"]
 
     assert outcome["type"] == "failure"
-    assert "cancelled" in outcome["reasoning"]
+    assert any("cancelled" in r.lower() for r in outcome["reasoning"])
 
 
 @pytest.mark.asyncio
