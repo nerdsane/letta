@@ -77,40 +77,78 @@ Keep it concise but information-rich. Include specific details that make this tr
         """
         Score the trajectory's outcome quality (0-1) with reasoning.
 
-        Considers:
-        - Was the task completed?
-        - User engagement and satisfaction signals
-        - Quality indicators (thoroughness, correctness, etc.)
-        - Any explicit feedback
+        Considers interaction depth, task complexity, problem-solving richness,
+        and learning value - not just task completion.
 
         Returns:
             (score, reasoning) where score is 0-1 and reasoning explains the score
         """
-        prompt = f"""Evaluate this agent trajectory and assign a quality score.
+        # Extract key metrics for context
+        metadata = trajectory_data.get("metadata", {})
+        turns = trajectory_data.get("turns", [])
+        tools_used = metadata.get("tools_used", [])
+
+        prompt = f"""Evaluate this agent trajectory and assign a quality score based on its VALUE for continual learning.
 
 Trajectory Data:
 {json.dumps(trajectory_data, indent=2)}
 
-Consider:
-- Task completion: Did the agent finish what the user asked for?
-- User engagement: Did the user stay engaged or abandon early?
-- Quality signals: Thoroughness, correctness, user feedback
-- Outcome: Success vs failure indicators
+SCORING CRITERIA (weighted):
+
+1. INTERACTION DEPTH (35%):
+   - Multiple turns with back-and-forth dialogue?
+   - Progressive refinement and iteration?
+   - User follow-up questions indicating engagement?
+   - Deep problem-solving vs simple Q&A?
+
+2. TASK COMPLEXITY (30%):
+   - Challenging/novel request vs routine/trivial?
+   - Required reasoning, planning, or creativity?
+   - Multi-step process vs single action?
+   - Obstacles overcome or edge cases handled?
+
+3. TOOL USAGE & CAPABILITIES (20%):
+   - Rich use of available tools/functions?
+   - Appropriate tool selection for the task?
+   - Sophisticated capability demonstration?
+
+4. LEARNING VALUE (15%):
+   - Would this be a useful reference case?
+   - Demonstrates important patterns or strategies?
+   - Representative of valuable agent behavior?
+   - Contains insights for similar future tasks?
 
 Respond with JSON:
 {{
   "score": 0.0-1.0,
-  "reasoning": "Brief explanation of why you gave this score"
+  "reasoning": "2-3 sentence explanation covering: interaction depth, task complexity, and why this score"
 }}
 
-Guidelines for scoring:
-- 0.8-1.0: Excellent - task completed successfully, user very satisfied
-- 0.6-0.8: Good - task completed, minor issues or neutral feedback
-- 0.4-0.6: Mediocre - partial completion or mixed results
-- 0.2-0.4: Poor - significant issues or abandonment
-- 0.0-0.2: Failed - task not completed, user frustrated or abandoned early
+SCORING GUIDELINES:
+- 0.9-1.0: Exceptional - Multi-turn complex task with deep problem-solving, rich tool usage, high learning value
+- 0.7-0.8: Good - Multi-turn or moderately complex, demonstrates valuable patterns, useful reference
+- 0.5-0.6: Mediocre - Simple completion, single-turn trivial request, limited learning value
+- 0.3-0.4: Poor - Incomplete, low quality, or minimal interaction
+- 0.0-0.2: Failed - Task failed, abandoned early, or error-filled execution
 
-Be honest and calibrated - most trajectories should be in the 0.4-0.8 range."""
+PENALIZE:
+- Single-turn trivial completions (e.g., "write 30 words" → done) - score ≤0.5
+- No tool usage when tools would add value
+- Copy-paste responses without reasoning
+- Abandoned or incomplete interactions
+
+REWARD:
+- Multi-turn collaborative problem-solving
+- Creative solutions to complex challenges
+- Sophisticated tool orchestration
+- Clear demonstration of agent capabilities
+
+Context from metadata:
+- Turns: {len(turns)}
+- Tools used: {len(tools_used)}
+- Message count: {metadata.get("message_count", 0)}
+
+Be strict and calibrated - reserve high scores (>0.7) for genuinely valuable learning examples."""
 
         client = AsyncOpenAI(api_key=model_settings.openai_api_key)
 
