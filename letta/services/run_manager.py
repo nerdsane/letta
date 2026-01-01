@@ -762,13 +762,14 @@ class RunManager:
                 messages=messages,
             )
 
-            # Create trajectory in database
-            trajectory = await self.trajectory_manager.create_trajectory_async(
+            # Create trajectory in database with async background processing
+            trajectory = await self.trajectory_manager.create_and_process_async(
                 trajectory_create=trajectory_create,
                 actor=actor,
+                auto_process=True,  # Enable background LLM processing (summary, scoring, embedding)
             )
 
-            logger.info(f"Created trajectory {trajectory.id} from run {run_id}")
+            logger.info(f"Created trajectory {trajectory.id} from run {run_id} (processing in background)")
 
         except Exception as e:
             logger.error(f"Error creating trajectory from run {run_id}: {e}", exc_info=True)

@@ -182,3 +182,44 @@ async def process_trajectory(
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
 
     return trajectory
+
+
+@router.get("/stats", response_model=dict)
+async def get_processing_stats(
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Get processing statistics for trajectories.
+
+    Returns counts by processing status:
+    - total: Total number of trajectories
+    - pending: Awaiting processing
+    - processing: Currently being processed
+    - completed: Successfully processed
+    - failed: Processing failed
+
+    Useful for monitoring async processing health.
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    stats = await server.trajectory_manager.get_processing_stats_async(actor=actor)
+    return stats
+
+
+@router.get("/queue", response_model=dict)
+async def get_queue_status(
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Get current queue status for active background processing tasks.
+
+    Returns:
+    - active_count: Number of trajectories currently being processed in background
+    - tasks: List of active tasks with their status
+
+    Useful for monitoring and debugging async processing.
+    """
+    # No actor needed - queue status is server-level
+    queue_status = server.trajectory_manager.get_queue_status()
+    return queue_status

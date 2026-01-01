@@ -49,6 +49,12 @@ class Trajectory(TrajectoryBase):
     # Vector embedding (not included in API responses - internal only)
     # embedding: Optional[List[float]] = Field(None, exclude=True)
 
+    # Async processing status
+    processing_status: str = Field("pending", description="Processing status: pending, processing, completed, failed")
+    processing_started_at: Optional[datetime] = Field(None, description="When LLM processing started")
+    processing_completed_at: Optional[datetime] = Field(None, description="When LLM processing completed")
+    processing_error: Optional[str] = Field(None, description="Error message if processing failed")
+
     # Timestamps
     created_at: datetime = Field(default_factory=get_utc_time, description="When the trajectory was created")
     updated_at: Optional[datetime] = Field(None, description="When the trajectory was last updated")

@@ -7,14 +7,18 @@ This service handles:
 - LLM-based outcome scoring (for filtering successes/failures)
 - Embedding generation (for similarity search)
 - Pgvector-based semantic search
+- Async background processing with retry logic
 """
 
+import asyncio
 import json
-from typing import List, Optional
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from letta.log import get_logger
 from letta.orm.trajectory import Trajectory as TrajectoryModel
 from letta.schemas.trajectory import (
     Trajectory,
@@ -26,6 +30,8 @@ from letta.schemas.trajectory import (
 from letta.services.trajectory_processing import TrajectoryProcessor
 from letta.settings import DatabaseChoice, settings
 
+logger = get_logger(__name__)
+
 
 class TrajectoryService:
     """Service for managing trajectories with LLM-powered processing."""
@@ -34,6 +40,7 @@ class TrajectoryService:
         self.db = db
         self.user_id = user_id
         self.processor = TrajectoryProcessor()
+        self._processing_tasks: Dict[str, asyncio.Task] = {}  # Track background tasks
 
     async def create_trajectory(self, trajectory_create: TrajectoryCreate) -> Trajectory:
         """
@@ -60,6 +67,124 @@ class TrajectoryService:
         # For MVP, we'll process synchronously in the /process endpoint
 
         return self._orm_to_pydantic(trajectory_orm)
+
+    async def create_and_process_async(
+        self,
+        trajectory_create: TrajectoryCreate,
+        auto_process: bool = True
+    ) -> Trajectory:
+        """
+        Create a trajectory and optionally process it asynchronously in the background.
+
+        This is the recommended way to create trajectories - it returns immediately
+        while processing (summary, scoring, embedding) happens in the background.
+
+        Args:
+            trajectory_create: Trajectory data
+            auto_process: If True, spawn background task to process (default: True)
+
+        Returns:
+            Trajectory with processing_status='pending' (will be 'completed' later)
+        """
+        # Create trajectory (fast, <100ms)
+        trajectory = await self.create_trajectory(trajectory_create)
+
+        # Spawn background processing task (non-blocking!)
+        if auto_process:
+            task = asyncio.create_task(
+                self._process_trajectory_background(trajectory.id)
+            )
+            self._processing_tasks[trajectory.id] = task
+            logger.info(f"Spawned background processing task for trajectory {trajectory.id}")
+
+        return trajectory
+
+    async def _process_trajectory_background(
+        self,
+        trajectory_id: str,
+        max_retries: int = 3,
+        initial_delay: float = 2.0
+    ) -> None:
+        """
+        Background task to process trajectory with exponential backoff retry logic.
+
+        Processing includes:
+        1. Generate searchable summary (LLM call, ~3-5 seconds)
+        2. Score outcome quality (LLM call, ~3-5 seconds)
+        3. Generate embedding (API call, ~1-2 seconds)
+
+        Total time: 7-15 seconds
+
+        Args:
+            trajectory_id: ID of trajectory to process
+            max_retries: Maximum number of retry attempts (default: 3)
+            initial_delay: Initial delay between retries in seconds (default: 2.0)
+        """
+        retry_count = 0
+        delay = initial_delay
+
+        while retry_count <= max_retries:
+            try:
+                # Mark as processing on first attempt
+                if retry_count == 0:
+                    result = await self.db.execute(
+                        select(TrajectoryModel).where(TrajectoryModel.id == trajectory_id)
+                    )
+                    trajectory_orm = result.scalar_one_or_none()
+                    if trajectory_orm:
+                        trajectory_orm.processing_status = "processing"
+                        trajectory_orm.processing_started_at = datetime.utcnow()
+                        await self.db.commit()
+
+                # Process with LLM (this is the slow part: 7-15 seconds)
+                logger.info(f"Processing trajectory {trajectory_id} (attempt {retry_count + 1}/{max_retries + 1})")
+                await self.process_trajectory(trajectory_id)
+
+                # Mark as completed
+                result = await self.db.execute(
+                    select(TrajectoryModel).where(TrajectoryModel.id == trajectory_id)
+                )
+                trajectory_orm = result.scalar_one_or_none()
+                if trajectory_orm:
+                    trajectory_orm.processing_status = "completed"
+                    trajectory_orm.processing_completed_at = datetime.utcnow()
+                    trajectory_orm.processing_error = None
+                    await self.db.commit()
+
+                logger.info(f"Successfully processed trajectory {trajectory_id}")
+
+                # Remove from tracking dict
+                self._processing_tasks.pop(trajectory_id, None)
+                return  # Success!
+
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e)
+                logger.error(f"Failed to process trajectory {trajectory_id} (attempt {retry_count}/{max_retries + 1}): {error_msg}")
+
+                if retry_count > max_retries:
+                    # All retries exhausted, mark as failed
+                    try:
+                        result = await self.db.execute(
+                            select(TrajectoryModel).where(TrajectoryModel.id == trajectory_id)
+                        )
+                        trajectory_orm = result.scalar_one_or_none()
+                        if trajectory_orm:
+                            trajectory_orm.processing_status = "failed"
+                            trajectory_orm.processing_error = f"Failed after {max_retries} retries: {error_msg}"
+                            trajectory_orm.processing_completed_at = datetime.utcnow()
+                            await self.db.commit()
+                    except Exception as update_error:
+                        logger.error(f"Failed to update trajectory status to failed: {update_error}")
+
+                    # Remove from tracking dict
+                    self._processing_tasks.pop(trajectory_id, None)
+                    return  # Give up
+                else:
+                    # Wait before retry (exponential backoff)
+                    logger.info(f"Retrying trajectory {trajectory_id} in {delay}s...")
+                    await asyncio.sleep(delay)
+                    delay *= 2  # Exponential backoff: 2s, 4s, 8s
 
     async def get_trajectory(self, trajectory_id: str) -> Optional[Trajectory]:
         """Get a single trajectory by ID."""
@@ -230,6 +355,10 @@ class TrajectoryService:
             searchable_summary=trajectory_orm.searchable_summary,
             outcome_score=trajectory_orm.outcome_score,
             score_reasoning=trajectory_orm.score_reasoning,
+            processing_status=trajectory_orm.processing_status,
+            processing_started_at=trajectory_orm.processing_started_at,
+            processing_completed_at=trajectory_orm.processing_completed_at,
+            processing_error=trajectory_orm.processing_error,
             created_at=trajectory_orm.created_at,
             updated_at=trajectory_orm.updated_at,
             organization_id=trajectory_orm.organization_id,

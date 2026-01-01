@@ -6,9 +6,10 @@ This enables context learning (retrieval), reinforcement learning (training), an
 """
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, Column, Float, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from letta.constants import MAX_EMBEDDING_DIM
@@ -79,6 +80,23 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
         embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True, doc="Vector embedding for similarity search")
     else:
         embedding = Column(CommonVector, nullable=True, doc="Vector embedding for similarity search")
+
+    # Async processing status
+    processing_status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="pending",
+        doc="Processing status: pending, processing, completed, failed"
+    )
+    processing_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, doc="When LLM processing started"
+    )
+    processing_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, doc="When LLM processing completed"
+    )
+    processing_error: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, doc="Error message if processing failed"
+    )
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="trajectories")
