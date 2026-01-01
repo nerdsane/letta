@@ -19,7 +19,6 @@ from letta.schemas.trajectory import (
 )
 from letta.server.rest_api.dependencies import HeaderParams, get_headers, get_letta_server
 from letta.server.server import SyncServer
-from letta.services.trajectory_service import TrajectoryService
 
 router = APIRouter(prefix="/trajectories", tags=["trajectories"])
 
@@ -38,17 +37,9 @@ async def create_trajectory(
 
     Processing (summary generation, scoring, embedding) happens asynchronously.
     """
-    # Get user_id from headers.actor_id
-    user_id = headers.actor_id
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User ID required")
-
-    # Use server's database registry
-    from letta.server.db_registry import db_registry
-    async with db_registry.async_session() as db:
-        service = TrajectoryService(db, user_id)
-        trajectory = await service.create_trajectory(trajectory_create)
-        return trajectory
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.create_trajectory_async(trajectory_create=trajectory_create, actor=actor)
+    return trajectory
 
 
 @router.get("/{trajectory_id}", response_model=Trajectory)
@@ -60,8 +51,8 @@ async def get_trajectory(
     """
     Get a single trajectory by ID.
     """
-    service = TrajectoryService(db, user_id)
-    trajectory = await service.get_trajectory(trajectory_id)
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.get_trajectory_async(trajectory_id=trajectory_id, actor=actor)
 
     if not trajectory:
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
@@ -76,15 +67,20 @@ async def list_trajectories(
     max_score: Optional[float] = Query(None, description="Maximum outcome score (0-1)", ge=0.0, le=1.0),
     limit: int = Query(50, description="Maximum number of results", ge=1, le=500),
     offset: int = Query(0, description="Number of results to skip", ge=0),
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
 ):
     """
     List trajectories with optional filtering.
     """
-    service = TrajectoryService(db, user_id)
-    trajectories = await service.list_trajectories(
-        agent_id=agent_id, min_score=min_score, max_score=max_score, limit=limit, offset=offset
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectories = await server.trajectory_manager.list_trajectories_async(
+        actor=actor,
+        agent_id=agent_id,
+        min_score=min_score,
+        max_score=max_score,
+        limit=limit,
+        offset=offset,
     )
     return trajectories
 
@@ -93,8 +89,8 @@ async def list_trajectories(
 async def update_trajectory(
     trajectory_id: str,
     trajectory_update: TrajectoryUpdate = Body(...),
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
 ):
     """
     Update an existing trajectory.
@@ -104,8 +100,12 @@ async def update_trajectory(
     - Update outcome information when complete
     - Trigger reprocessing (set searchable_summary=None to regenerate)
     """
-    service = TrajectoryService(db, user_id)
-    trajectory = await service.update_trajectory(trajectory_id, trajectory_update)
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.update_trajectory_async(
+        trajectory_id=trajectory_id,
+        trajectory_update=trajectory_update,
+        actor=actor,
+    )
 
     if not trajectory:
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
@@ -116,14 +116,14 @@ async def update_trajectory(
 @router.delete("/{trajectory_id}", status_code=204)
 async def delete_trajectory(
     trajectory_id: str,
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
 ):
     """
     Delete a trajectory.
     """
-    service = TrajectoryService(db, user_id)
-    success = await service.delete_trajectory(trajectory_id)
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    success = await server.trajectory_manager.delete_trajectory_async(trajectory_id=trajectory_id, actor=actor)
 
     if not success:
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
@@ -132,8 +132,8 @@ async def delete_trajectory(
 @router.post("/search", response_model=TrajectorySearchResponse)
 async def search_trajectories(
     search_request: TrajectorySearchRequest = Body(...),
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
 ):
     """
     Search for similar trajectories using semantic similarity.
@@ -153,16 +153,16 @@ async def search_trajectories(
 
     Returns trajectories ordered by semantic similarity to the query.
     """
-    service = TrajectoryService(db, user_id)
-    results = await service.search_trajectories(search_request)
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    results = await server.trajectory_manager.search_trajectories_async(search_request=search_request, actor=actor)
     return TrajectorySearchResponse(results=results, query=search_request.query)
 
 
 @router.post("/{trajectory_id}/process", response_model=Trajectory)
 async def process_trajectory(
     trajectory_id: str,
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
 ):
     """
     Manually trigger LLM processing for a trajectory.
@@ -175,8 +175,8 @@ async def process_trajectory(
 
     Normally happens automatically, but you can trigger it manually if needed.
     """
-    service = TrajectoryService(db, user_id)
-    trajectory = await service.process_trajectory(trajectory_id)
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.process_trajectory_async(trajectory_id=trajectory_id, actor=actor)
 
     if not trajectory:
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")

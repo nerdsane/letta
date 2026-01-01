@@ -34,7 +34,7 @@ from letta.services.helpers.agent_manager_helper import validate_agent_exists_as
 from letta.services.message_manager import MessageManager
 from letta.services.step_manager import StepManager
 from letta.services.trajectory_converter import TrajectoryConverter
-from letta.services.trajectory_service import TrajectoryService
+from letta.services.trajectory_manager import TrajectoryManager
 from letta.utils import enforce_types
 from letta.validators import raise_on_invalid_id
 
@@ -50,6 +50,7 @@ class RunManager:
         self.message_manager = MessageManager()
         self.agent_manager = AgentManager()
         self.trajectory_converter = TrajectoryConverter()
+        self.trajectory_manager = TrajectoryManager()
 
     @enforce_types
     async def create_run(self, pydantic_run: PydanticRun, actor: PydanticUser) -> PydanticRun:
@@ -762,9 +763,10 @@ class RunManager:
             )
 
             # Create trajectory in database
-            async with db_registry.async_session() as session:
-                trajectory_service = TrajectoryService(db=session, user_id=actor.id)
-                trajectory = await trajectory_service.create_trajectory(trajectory_create)
+            trajectory = await self.trajectory_manager.create_trajectory_async(
+                trajectory_create=trajectory_create,
+                actor=actor,
+            )
 
             logger.info(f"Created trajectory {trajectory.id} from run {run_id}")
 
