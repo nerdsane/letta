@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from letta.orm.run import Run
     from letta.orm.source import Source
     from letta.orm.tool import Tool
+    from letta.orm.trajectory import Trajectory
     from letta.services.summarizer.summarizer_config import CompactionSettings
 
 
@@ -149,6 +150,13 @@ class Agent(SqlalchemyBase, OrganizationMixin, ProjectMixin, TemplateEntityMixin
         cascade="all, delete-orphan",
         lazy="selectin",
         doc="Runs associated with the agent.",
+    )
+    trajectories: Mapped[List["Trajectory"]] = relationship(
+        "Trajectory",
+        back_populates="agent",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        doc="Trajectories (execution traces) associated with the agent.",
     )
     identities: Mapped[List["Identity"]] = relationship(
         "Identity",
