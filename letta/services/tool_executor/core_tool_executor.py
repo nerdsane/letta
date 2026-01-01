@@ -44,6 +44,7 @@ class LettaCoreToolExecutor(ToolExecutor):
             "conversation_search": self.conversation_search,
             "archival_memory_search": self.archival_memory_search,
             "archival_memory_insert": self.archival_memory_insert,
+            "search_trajectories": self.search_trajectories,
             "core_memory_append": self.core_memory_append,
             "core_memory_replace": self.core_memory_replace,
             "memory_replace": self.memory_replace,
@@ -316,6 +317,80 @@ class LettaCoreToolExecutor(ToolExecutor):
         )
         await self.agent_manager.rebuild_system_prompt_async(agent_id=agent_state.id, actor=actor, force=True)
         return None
+
+    async def search_trajectories(
+        self,
+        agent_state: AgentState,
+        actor: User,
+        query: str,
+        min_score: Optional[float] = 0.5,
+        limit: int = 3,
+    ) -> Optional[str]:
+        """Search past execution experiences to learn from similar situations."""
+        try:
+            from letta.schemas.trajectory import TrajectorySearchRequest
+            from letta.server.server import SyncServer
+
+            # Get trajectory manager from server
+            # Note: We'll need to access the server instance - for now use a direct import pattern
+            from letta.server.rest_api.app import server
+
+            # Ensure limit is reasonable
+            limit = min(limit, 10)  # Cap at 10 results
+
+            # Create search request
+            search_request = TrajectorySearchRequest(
+                query=query,
+                agent_id=agent_state.id,
+                min_score=min_score,
+                limit=limit,
+            )
+
+            # Search trajectories using the manager
+            results = await server.trajectory_manager.search_trajectories_async(
+                search_request=search_request,
+                actor=actor,
+            )
+
+            if not results or len(results) == 0:
+                return "No relevant past experiences found for this query."
+
+            # Format results for the agent
+            formatted_results = []
+            for result in results:
+                trajectory = result.trajectory
+                similarity = result.similarity
+
+                # Extract key info from trajectory
+                result_dict = {
+                    "similarity": f"{similarity:.2f}",
+                    "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                    "summary": trajectory.searchable_summary or "No summary available",
+                }
+
+                # Add metadata if available
+                if trajectory.data and "metadata" in trajectory.data:
+                    metadata = trajectory.data["metadata"]
+                    result_dict["details"] = {
+                        "status": metadata.get("status"),
+                        "tools_used": metadata.get("tools_used", []),
+                        "step_count": metadata.get("step_count"),
+                    }
+
+                formatted_results.append(result_dict)
+
+            # Return structured results
+            return {
+                "message": f"Found {len(results)} relevant past experiences:",
+                "results": formatted_results,
+            }
+
+        except Exception as e:
+            # Log error but don't fail the agent
+            from letta.log import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Error searching trajectories: {e}")
+            return f"Unable to search past experiences: {str(e)}"
 
     async def core_memory_append(self, agent_state: AgentState, actor: User, label: str, content: str) -> Optional[str]:
         if agent_state.memory.get_block(label).read_only:
