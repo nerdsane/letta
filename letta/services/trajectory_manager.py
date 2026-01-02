@@ -203,6 +203,14 @@ class TrajectoryManager:
                     query = query.where(TrajectoryModel.outcome_score >= search_request.min_score)
                 if search_request.max_score is not None:
                     query = query.where(TrajectoryModel.outcome_score <= search_request.max_score)
+                if search_request.task_category:
+                    query = query.where(TrajectoryModel.task_category == search_request.task_category)
+                if search_request.complexity_level:
+                    query = query.where(TrajectoryModel.complexity_level == search_request.complexity_level)
+                if search_request.tags:
+                    # For PostgreSQL: check if trajectory has ALL specified tags using array contains (@>)
+                    for tag in search_request.tags:
+                        query = query.where(TrajectoryModel.tags.contains([tag]))
 
                 # Limit results
                 query = query.limit(search_request.limit)
@@ -233,12 +241,13 @@ class TrajectoryManager:
 
     async def process_trajectory_async(self, trajectory_id: str, actor: PydanticUser) -> Optional[Trajectory]:
         """
-        Process a trajectory with LLM to generate summary, score, and embedding.
+        Process a trajectory with LLM to generate summary, score, labels, metadata, and embedding.
 
         This is the core LLM-powered processing:
         1. Generate searchable summary from trajectory data
         2. Score the trajectory (0-1, with reasoning)
-        3. Generate embedding from summary
+        3. Extract labels and metadata (tags, category, complexity, patterns)
+        4. Generate embedding from summary
         """
         async with db_registry.async_session() as session:
             async with session.begin():
@@ -253,12 +262,16 @@ class TrajectoryManager:
                     return None
 
                 # Process with LLM
-                summary, score, reasoning, embedding = await self.processor.process_trajectory(trajectory_orm.data)
+                summary, score, reasoning, tags, task_category, complexity_level, trajectory_metadata, embedding = await self.processor.process_trajectory(trajectory_orm.data)
 
                 # Update trajectory with processed data
                 trajectory_orm.searchable_summary = summary
                 trajectory_orm.outcome_score = score
                 trajectory_orm.score_reasoning = reasoning
+                trajectory_orm.tags = tags
+                trajectory_orm.task_category = task_category
+                trajectory_orm.complexity_level = complexity_level
+                trajectory_orm.trajectory_metadata = trajectory_metadata
                 trajectory_orm.embedding = embedding
 
                 await session.flush()
@@ -312,9 +325,10 @@ class TrajectoryManager:
         Processing includes:
         1. Generate searchable summary (LLM call, ~3-5 seconds)
         2. Score outcome quality (LLM call, ~3-5 seconds)
-        3. Generate embedding (API call, ~1-2 seconds)
+        3. Extract labels and metadata (LLM call, ~3-5 seconds)
+        4. Generate embedding (API call, ~1-2 seconds)
 
-        Total time: 7-15 seconds
+        Total time: 10-20 seconds
 
         Args:
             trajectory_id: ID of trajectory to process

@@ -203,12 +203,99 @@ Be strict and calibrated - reserve high scores (>0.7) for genuinely valuable lea
             # Return None to indicate failure - trajectory will be created but not searchable
             return None
 
-    async def process_trajectory(self, trajectory_data: Dict) -> Tuple[str, float, str, Optional[List[float]]]:
+    async def extract_labels_and_metadata(self, trajectory_data: Dict) -> Tuple[List[str], str, str, Dict]:
         """
-        Full processing pipeline: generate summary, score, and embedding.
+        Extract structured labels and metadata from trajectory for pattern detection and filtering.
 
         Returns:
-            (summary, score, reasoning, embedding)
+            (tags, task_category, complexity_level, trajectory_metadata)
+            - tags: List of semantic labels like ['creative', 'analytical', 'iterative']
+            - task_category: Primary classification like 'code_generation', 'debugging', 'research'
+            - complexity_level: One of 'trivial', 'simple', 'moderate', 'complex', 'expert'
+            - trajectory_metadata: Dict with flexible additional info (interaction patterns, tool usage, etc.)
+        """
+        prompt = f"""Analyze this agent trajectory and extract structured metadata for categorization and pattern detection.
+
+Trajectory Data:
+{json.dumps(trajectory_data, indent=2)}
+
+Extract the following structured metadata:
+
+1. TAGS (3-7 semantic labels):
+   - Descriptive labels that capture the nature of the work
+   - Examples: 'creative', 'analytical', 'iterative', 'collaborative', 'technical',
+     'debugging', 'research', 'problem_solving', 'code_generation', 'informational'
+   - Focus on characteristics that would help find similar trajectories
+
+2. TASK_CATEGORY (single primary classification):
+   - The main type of work being done
+   - Examples: 'code_generation', 'debugging', 'research', 'data_analysis', 'documentation',
+     'refactoring', 'design', 'testing', 'content_creation', 'information_retrieval'
+   - Choose the ONE category that best represents the overall task
+
+3. COMPLEXITY_LEVEL (single value):
+   - Overall difficulty/sophistication level
+   - One of: 'trivial', 'simple', 'moderate', 'complex', 'expert'
+   - Consider: reasoning depth, tool orchestration, problem difficulty, multi-step planning
+
+4. METADATA (flexible dictionary with patterns and insights):
+   - interaction_style: 'exploratory' | 'directive' | 'collaborative' | 'iterative'
+   - tool_orchestration: 'single_tool' | 'coordinated_tools' | 'advanced_workflow'
+   - problem_solving_approach: brief description of strategy used
+   - key_capabilities_demonstrated: list of notable skills/features shown
+   - any other interesting patterns you notice
+
+Respond with JSON:
+{{
+  "tags": ["tag1", "tag2", "tag3"],
+  "task_category": "category",
+  "complexity_level": "moderate",
+  "metadata": {{
+    "interaction_style": "...",
+    "tool_orchestration": "...",
+    "problem_solving_approach": "...",
+    "key_capabilities_demonstrated": ["...", "..."]
+  }}
+}}
+
+Be specific and descriptive. These labels will be used for filtering, pattern detection, and dashboard analytics."""
+
+        client = AsyncOpenAI(api_key=model_settings.openai_api_key)
+
+        try:
+            response = await client.chat.completions.create(
+                model=self.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+            result = json.loads(response.choices[0].message.content)
+
+            tags = result.get("tags", [])
+            task_category = result.get("task_category", "unknown")
+            complexity_level = result.get("complexity_level", "moderate")
+            metadata = result.get("metadata", {})
+
+            # Validate complexity_level
+            valid_levels = ["trivial", "simple", "moderate", "complex", "expert"]
+            if complexity_level not in valid_levels:
+                complexity_level = "moderate"
+
+            return tags, task_category, complexity_level, metadata
+
+        except Exception as e:
+            logger.error(f"Failed to extract labels and metadata: {e}")
+            # Fallback to basic extraction
+            return self._create_fallback_labels(trajectory_data)
+
+    async def process_trajectory(self, trajectory_data: Dict) -> Tuple[str, float, str, List[str], str, str, Dict, Optional[List[float]]]:
+        """
+        Full processing pipeline: generate summary, score, labels, metadata, and embedding.
+
+        Returns:
+            (summary, score, reasoning, tags, task_category, complexity_level, trajectory_metadata, embedding)
         """
         # Generate summary
         summary = await self.generate_searchable_summary(trajectory_data)
@@ -216,10 +303,13 @@ Be strict and calibrated - reserve high scores (>0.7) for genuinely valuable lea
         # Score trajectory
         score, reasoning = await self.score_trajectory(trajectory_data)
 
+        # Extract labels and metadata
+        tags, task_category, complexity_level, metadata = await self.extract_labels_and_metadata(trajectory_data)
+
         # Generate embedding from summary
         embedding = await self.generate_embedding(summary)
 
-        return summary, score, reasoning, embedding
+        return summary, score, reasoning, tags, task_category, complexity_level, metadata, embedding
 
     def _create_fallback_summary(self, data: Dict) -> str:
         """Create a basic summary when LLM call fails."""
@@ -279,3 +369,40 @@ Be strict and calibrated - reserve high scores (>0.7) for genuinely valuable lea
         reasoning = f"Heuristic score based on: {', '.join(reasons) if reasons else 'no clear signals'}"
 
         return score, reasoning
+
+    def _create_fallback_labels(self, data: Dict) -> Tuple[List[str], str, str, Dict]:
+        """Create basic labels when LLM call fails."""
+        tags = []
+        task_category = "unknown"
+        complexity_level = "moderate"
+        metadata = {}
+
+        # Try to infer from metadata
+        traj_metadata = data.get("metadata", {})
+
+        # Count turns as complexity heuristic
+        turns = data.get("turns", [])
+        if len(turns) <= 2:
+            complexity_level = "simple"
+        elif len(turns) >= 10:
+            complexity_level = "complex"
+
+        # Tools used
+        tools_used = traj_metadata.get("tools_used", [])
+        if tools_used:
+            tags.append("tool_usage")
+            metadata["tools_used_count"] = len(tools_used)
+
+        # Message count
+        message_count = traj_metadata.get("message_count", 0)
+        if message_count > 10:
+            tags.append("extended_interaction")
+
+        # Default tags if none found
+        if not tags:
+            tags = ["general"]
+
+        metadata["fallback"] = True
+        metadata["turns_count"] = len(turns)
+
+        return tags, task_category, complexity_level, metadata

@@ -17,6 +17,7 @@ from letta.schemas.trajectory import (
     TrajectorySearchResult,
     TrajectoryUpdate,
 )
+from pydantic import BaseModel
 from letta.server.rest_api.dependencies import HeaderParams, get_headers, get_letta_server
 from letta.server.server import SyncServer
 
@@ -223,3 +224,228 @@ async def process_trajectory(
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
 
     return trajectory
+
+
+# Analytics endpoints
+
+
+class TrajectoryWithEmbedding(BaseModel):
+    """Trajectory with embedding included for visualization"""
+    id: str
+    agent_id: str
+    searchable_summary: Optional[str]
+    outcome_score: Optional[float]
+    tags: Optional[List[str]]
+    task_category: Optional[str]
+    complexity_level: Optional[str]
+    embedding: Optional[List[float]]
+    created_at: str
+    processing_status: str
+    data: dict  # Include metadata for turn counts, etc.
+
+
+class AnalyticsAggregations(BaseModel):
+    """Aggregated statistics for analytics dashboard"""
+    total_count: int
+    score_distribution: dict  # bins -> counts
+    turn_distribution: dict  # turn counts -> frequency
+    tool_usage: dict  # tool name -> count
+    tags_frequency: dict  # tag -> count
+    category_breakdown: dict  # category -> count
+    complexity_breakdown: dict  # complexity -> count
+    daily_counts: List[dict]  # date -> count, avg_score
+    agent_stats: dict  # agent_id -> stats
+
+
+@router.get("/analytics/embeddings", response_model=List[TrajectoryWithEmbedding])
+async def get_trajectories_with_embeddings(
+    limit: int = Query(500, ge=1, le=1000, description="Maximum number of trajectories to return"),
+    min_score: Optional[float] = Query(None, ge=0.0, le=1.0, description="Filter by minimum outcome score"),
+    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Get trajectories with embeddings for visualization.
+
+    Returns trajectory data including the embedding vectors needed for
+    semantic map visualization. Embeddings are normally excluded from
+    API responses but included here for analytics.
+
+    Use this endpoint to build 2D semantic maps where trajectories cluster
+    by similarity.
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+
+    # Get trajectories from database with embeddings
+    from letta.orm.trajectory import Trajectory
+    from sqlalchemy import select
+    from letta.server.db import db_registry
+
+    async with db_registry.async_session() as session:
+        query = select(Trajectory).where(
+            Trajectory.organization_id == actor.organization_id
+        )
+
+        if agent_id:
+            query = query.where(Trajectory.agent_id == agent_id)
+        if min_score is not None:
+            query = query.where(Trajectory.outcome_score >= min_score)
+
+        # Only return processed trajectories with embeddings
+        query = query.where(
+            Trajectory.processing_status == "completed",
+            Trajectory.embedding.isnot(None)
+        ).limit(limit)
+
+        result = await session.execute(query)
+        trajectories = result.scalars().all()
+
+        return [
+            TrajectoryWithEmbedding(
+                id=t.id,
+                agent_id=t.agent_id,
+                searchable_summary=t.searchable_summary,
+                outcome_score=t.outcome_score,
+                tags=t.tags,
+                task_category=t.task_category,
+                complexity_level=t.complexity_level,
+                embedding=t.embedding,
+                created_at=t.created_at.isoformat(),
+                processing_status=t.processing_status,
+                data=t.data,
+            )
+            for t in trajectories
+        ]
+
+
+@router.get("/analytics/aggregations", response_model=AnalyticsAggregations)
+async def get_analytics_aggregations(
+    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Get aggregated statistics for analytics dashboard.
+
+    Returns pre-computed aggregations for charts and graphs:
+    - Score distribution (histogram bins)
+    - Turn count distribution
+    - Tool usage frequency
+    - Tags word cloud data
+    - Category and complexity breakdowns
+    - Time-series data (daily counts and scores)
+    - Per-agent statistics
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+
+    from letta.orm.trajectory import Trajectory
+    from sqlalchemy import select, func
+    from letta.server.db import db_registry
+    from collections import Counter, defaultdict
+    from datetime import datetime, timedelta, timezone
+
+    async with db_registry.async_session() as session:
+        # Base query
+        query = select(Trajectory).where(
+            Trajectory.organization_id == actor.organization_id
+        )
+        if agent_id:
+            query = query.where(Trajectory.agent_id == agent_id)
+
+        result = await session.execute(query)
+        trajectories = result.scalars().all()
+
+        total_count = len(trajectories)
+
+        # Score distribution (10 bins: 0-0.1, 0.1-0.2, ..., 0.9-1.0)
+        score_bins = defaultdict(int)
+        for t in trajectories:
+            if t.outcome_score is not None:
+                bin_idx = min(int(t.outcome_score * 10), 9)
+                bin_range = f"{bin_idx * 0.1:.1f}-{(bin_idx + 1) * 0.1:.1f}"
+                score_bins[bin_range] += 1
+
+        # Turn distribution
+        turn_counts = Counter()
+        for t in trajectories:
+            turn_count = len(t.data.get("turns", []))
+            turn_counts[turn_count] += 1
+
+        # Tool usage
+        tool_usage = Counter()
+        for t in trajectories:
+            tools = t.data.get("metadata", {}).get("tools_used", [])
+            for tool in tools:
+                tool_usage[tool] += 1
+
+        # Tags frequency
+        tags_freq = Counter()
+        for t in trajectories:
+            if t.tags:
+                for tag in t.tags:
+                    tags_freq[tag] += 1
+
+        # Category breakdown
+        category_breakdown = Counter()
+        for t in trajectories:
+            if t.task_category:
+                category_breakdown[t.task_category] += 1
+
+        # Complexity breakdown
+        complexity_breakdown = Counter()
+        for t in trajectories:
+            if t.complexity_level:
+                complexity_breakdown[t.complexity_level] += 1
+
+        # Daily counts and scores (last 30 days)
+        daily_data = defaultdict(lambda: {"count": 0, "total_score": 0, "score_count": 0})
+        cutoff_date = datetime.now(tz=timezone.utc) - timedelta(days=30)
+
+        for t in trajectories:
+            if t.created_at >= cutoff_date:
+                date_key = t.created_at.date().isoformat()
+                daily_data[date_key]["count"] += 1
+                if t.outcome_score is not None:
+                    daily_data[date_key]["total_score"] += t.outcome_score
+                    daily_data[date_key]["score_count"] += 1
+
+        # Calculate averages
+        daily_counts = []
+        for date_str in sorted(daily_data.keys()):
+            data = daily_data[date_str]
+            avg_score = data["total_score"] / data["score_count"] if data["score_count"] > 0 else None
+            daily_counts.append({
+                "date": date_str,
+                "count": data["count"],
+                "avg_score": avg_score,
+            })
+
+        # Agent stats
+        agent_stats = defaultdict(lambda: {"count": 0, "total_score": 0, "score_count": 0})
+        for t in trajectories:
+            agent_stats[t.agent_id]["count"] += 1
+            if t.outcome_score is not None:
+                agent_stats[t.agent_id]["total_score"] += t.outcome_score
+                agent_stats[t.agent_id]["score_count"] += 1
+
+        # Calculate agent averages
+        agent_stats_formatted = {}
+        for agent_id, stats in agent_stats.items():
+            avg_score = stats["total_score"] / stats["score_count"] if stats["score_count"] > 0 else None
+            agent_stats_formatted[agent_id] = {
+                "count": stats["count"],
+                "avg_score": avg_score,
+            }
+
+        return AnalyticsAggregations(
+            total_count=total_count,
+            score_distribution=dict(score_bins),
+            turn_distribution=dict(turn_counts),
+            tool_usage=dict(tool_usage),
+            tags_frequency=dict(tags_freq),
+            category_breakdown=dict(category_breakdown),
+            complexity_breakdown=dict(complexity_breakdown),
+            daily_counts=daily_counts,
+            agent_stats=agent_stats_formatted,
+        )

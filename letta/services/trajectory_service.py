@@ -294,6 +294,14 @@ class TrajectoryService:
                 query = query.where(TrajectoryModel.outcome_score >= search_request.min_score)
             if search_request.max_score is not None:
                 query = query.where(TrajectoryModel.outcome_score <= search_request.max_score)
+            if search_request.task_category:
+                query = query.where(TrajectoryModel.task_category == search_request.task_category)
+            if search_request.complexity_level:
+                query = query.where(TrajectoryModel.complexity_level == search_request.complexity_level)
+            if search_request.tags:
+                # For PostgreSQL: check if trajectory has ALL specified tags using array contains (@>)
+                for tag in search_request.tags:
+                    query = query.where(TrajectoryModel.tags.contains([tag]))
 
             # Limit results
             query = query.limit(search_request.limit)

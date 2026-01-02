@@ -46,6 +46,12 @@ class Trajectory(TrajectoryBase):
     outcome_score: Optional[float] = Field(None, description="Quality score 0-1 (LLM-generated)", ge=0.0, le=1.0)
     score_reasoning: Optional[str] = Field(None, description="Explanation of the outcome score (LLM-generated)")
 
+    # LLM-extracted labels and metadata
+    tags: Optional[List[str]] = Field(None, description="Semantic tags for filtering (LLM-generated)")
+    task_category: Optional[str] = Field(None, description="Primary task classification (LLM-generated)")
+    complexity_level: Optional[str] = Field(None, description="Task complexity (LLM-generated)")
+    trajectory_metadata: Optional[Dict[str, Any]] = Field(None, description="Flexible metadata extracted by LLM")
+
     # Vector embedding (not included in API responses - internal only)
     # embedding: Optional[List[float]] = Field(None, exclude=True)
 
@@ -93,6 +99,10 @@ class TrajectoryUpdate(TrajectoryBase):
     searchable_summary: Optional[str] = Field(None, description="Manually override the LLM-generated summary")
     outcome_score: Optional[float] = Field(None, description="Manually override the outcome score", ge=0.0, le=1.0)
     score_reasoning: Optional[str] = Field(None, description="Manually override the score reasoning")
+    tags: Optional[List[str]] = Field(None, description="Manually override LLM-generated tags")
+    task_category: Optional[str] = Field(None, description="Manually override task classification")
+    complexity_level: Optional[str] = Field(None, description="Manually override complexity level")
+    trajectory_metadata: Optional[Dict[str, Any]] = Field(None, description="Manually override or add metadata")
 
     model_config = ConfigDict(extra="ignore")
 
@@ -112,6 +122,9 @@ class TrajectorySearchRequest(LettaBase):
     max_score: Optional[float] = Field(
         None, description="Maximum outcome score (0-1) - use to find failures/anti-patterns", ge=0.0, le=1.0
     )
+    tags: Optional[List[str]] = Field(None, description="Filter by tags (trajectories must have all specified tags)")
+    task_category: Optional[str] = Field(None, description="Filter by task category")
+    complexity_level: Optional[str] = Field(None, description="Filter by complexity level")
     limit: int = Field(10, description="Maximum number of results to return", ge=1, le=100)
 
     model_config = ConfigDict(extra="forbid")

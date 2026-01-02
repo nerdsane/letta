@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, ARRAY, Column, DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from letta.constants import MAX_EMBEDDING_DIM
@@ -47,6 +47,10 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
         Index("ix_trajectories_organization_id", "organization_id"),
         Index("ix_trajectories_created_at", "created_at", "id"),
         Index("ix_trajectories_outcome_score", "outcome_score"),
+        Index("ix_trajectories_task_category", "task_category"),
+        Index("ix_trajectories_complexity_level", "complexity_level"),
+        # GIN index for array contains queries on tags (PostgreSQL only)
+        Index("ix_trajectories_tags", "tags", postgresql_using="gin") if settings.database_engine is DatabaseChoice.POSTGRES else None,
     )
 
     # Primary key with trajectory- prefix
@@ -71,6 +75,22 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
     )
     score_reasoning: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, doc="Explanation of the outcome score (LLM-generated)"
+    )
+
+    # LLM-extracted labels and metadata
+    tags: Mapped[Optional[list]] = mapped_column(
+        ARRAY(String) if settings.database_engine is DatabaseChoice.POSTGRES else JSON,
+        nullable=True,
+        doc="Semantic tags for filtering (LLM-generated): ['creative', 'analytical', 'iterative']"
+    )
+    task_category: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, doc="Primary task classification (LLM-generated): code_generation, debugging, research, etc."
+    )
+    complexity_level: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, doc="Task complexity (LLM-generated): trivial, simple, moderate, complex, expert"
+    )
+    trajectory_metadata: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True, doc="Flexible metadata extracted by LLM: interaction patterns, tool usage, etc."
     )
 
     # Vector embedding for similarity search (from searchable_summary)
