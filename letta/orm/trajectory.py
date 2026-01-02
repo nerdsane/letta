@@ -97,9 +97,9 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
     if settings.database_engine is DatabaseChoice.POSTGRES:
         from pgvector.sqlalchemy import Vector
 
-        embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True, doc="Vector embedding for similarity search")
+        embedding: Mapped[Optional[list]] = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True, doc="Vector embedding for similarity search")
     else:
-        embedding = Column(CommonVector, nullable=True, doc="Vector embedding for similarity search")
+        embedding: Mapped[Optional[list]] = mapped_column(CommonVector, nullable=True, doc="Vector embedding for similarity search")
 
     # Async processing status
     processing_status: Mapped[str] = mapped_column(

@@ -140,6 +140,14 @@ class TrajectoryManager:
                     trajectory_orm.outcome_score = trajectory_update.outcome_score
                 if trajectory_update.score_reasoning is not None:
                     trajectory_orm.score_reasoning = trajectory_update.score_reasoning
+                if trajectory_update.tags is not None:
+                    trajectory_orm.tags = trajectory_update.tags
+                if trajectory_update.task_category is not None:
+                    trajectory_orm.task_category = trajectory_update.task_category
+                if trajectory_update.complexity_level is not None:
+                    trajectory_orm.complexity_level = trajectory_update.complexity_level
+                if trajectory_update.trajectory_metadata is not None:
+                    trajectory_orm.trajectory_metadata = trajectory_update.trajectory_metadata
 
                 await session.flush()
                 await session.refresh(trajectory_orm)
@@ -475,6 +483,10 @@ class TrajectoryManager:
             searchable_summary=trajectory_orm.searchable_summary,
             outcome_score=trajectory_orm.outcome_score,
             score_reasoning=trajectory_orm.score_reasoning,
+            tags=trajectory_orm.tags,
+            task_category=trajectory_orm.task_category,
+            complexity_level=trajectory_orm.complexity_level,
+            trajectory_metadata=trajectory_orm.trajectory_metadata,
             processing_status=trajectory_orm.processing_status,
             processing_started_at=trajectory_orm.processing_started_at,
             processing_completed_at=trajectory_orm.processing_completed_at,
