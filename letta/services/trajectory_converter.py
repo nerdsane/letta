@@ -201,32 +201,35 @@ class TrajectoryConverter:
         messages: List[Message],
     ) -> Dict[str, Any]:
         """
-        Determine the outcome of the run (success/partial/failure).
+        Determine the execution status of the run (completed/incomplete/failed/error).
+
+        This measures whether the run completed without errors, NOT the quality
+        or learning value of the interaction (that's measured by outcome_score).
 
         Uses heuristics based on run status, stop reason, and messages.
         """
-        # Default outcome
-        outcome_type = "unknown"
+        # Default execution status
+        execution_status = "unknown"
         confidence = 0.5
         reasoning = []
 
         # Check run status
         if run.status == "completed":
-            outcome_type = "success"
+            execution_status = "completed"  # Renamed from "success"
             confidence = 0.7
-            reasoning.append("Run completed successfully")
+            reasoning.append("Run completed without errors")
 
             # Check stop reason for additional signals
             if run.stop_reason == "end_turn":
                 confidence = 0.8
                 reasoning.append("Agent naturally ended turn")
             elif run.stop_reason == "max_tokens":
-                outcome_type = "partial_success"
+                execution_status = "incomplete"  # Renamed from "partial_success"
                 confidence = 0.5
                 reasoning.append("Hit token limit (may be incomplete)")
 
         elif run.status == "failed":
-            outcome_type = "failure"
+            execution_status = "failed"  # Same name
             confidence = 0.9
             reasoning.append("Run failed with error")
 
@@ -235,7 +238,7 @@ class TrajectoryConverter:
                 reasoning.append(f"Error: {run.metadata_['error']}")
 
         elif run.status == "cancelled":
-            outcome_type = "failure"
+            execution_status = "failed"  # Same name
             confidence = 0.8
             reasoning.append("Run was cancelled")
 
@@ -243,7 +246,7 @@ class TrajectoryConverter:
         user_message_count = sum(1 for msg in messages if msg.role == MessageRole.user)
         if user_message_count > 3:
             # Multiple user messages suggest continued engagement
-            if outcome_type == "success":
+            if execution_status == "completed":
                 confidence = min(1.0, confidence + 0.1)
                 reasoning.append(f"High user engagement ({user_message_count} user messages)")
 
@@ -252,8 +255,25 @@ class TrajectoryConverter:
         if tool_calls > 0:
             reasoning.append(f"Used {tool_calls} tool calls")
 
+        # Map execution status to old outcome type for backward compatibility
+        status_to_outcome_map = {
+            "completed": "success",
+            "incomplete": "partial_success",
+            "failed": "failure",
+            "error": "error",
+            "unknown": "unknown",
+        }
+
+        # Return both new and old format for backward compatibility
         return {
-            "type": outcome_type,  # success | partial_success | failure | unknown
+            # New format (clear semantics - preferred)
+            "execution": {
+                "status": execution_status,  # completed | incomplete | failed | error | unknown
+                "confidence": confidence,  # 0.0-1.0
+                "reasoning": reasoning,
+            },
+            # Old format (deprecated, kept for backward compatibility)
+            "type": status_to_outcome_map.get(execution_status, "unknown"),  # success | partial_success | failure | unknown
             "confidence": confidence,  # 0.0-1.0
             "reasoning": reasoning,
         }
