@@ -341,43 +341,50 @@ class LettaCoreToolExecutor(ToolExecutor):
             limit = min(limit, 10)  # Cap at 10 results per category
 
             if include_contrasts:
-                # Get both successes and failures for comparison
-                # Search for successes (high scores)
-                success_request = TrajectorySearchRequest(
-                    query=query,
-                    agent_id=agent_state.id,
-                    min_score=0.7,  # Successes only
-                    limit=limit,
-                )
-                success_results = await server.trajectory_manager.search_trajectories_async(
-                    search_request=success_request,
-                    actor=actor,
-                )
+                # Get all trajectories and categorize into three tiers: successes, moderate, and failures
+                # This ensures complete coverage with no gaps in the score range
 
-                # Search for failures (low scores)
-                # Note: We need to get low-scoring trajectories. The current search doesn't support max_score,
-                # so we'll get all (min_score=0.0) and filter for low scores client-side
-                failure_request = TrajectorySearchRequest(
+                # Fetch all relevant trajectories (get more to ensure we have enough in each category)
+                all_request = TrajectorySearchRequest(
                     query=query,
                     agent_id=agent_state.id,
                     min_score=0.0,  # Get all
-                    limit=limit * 3,  # Get more to find failures
+                    limit=limit * 5,  # Get extra to populate all three categories
                 )
                 all_results = await server.trajectory_manager.search_trajectories_async(
-                    search_request=failure_request,
+                    search_request=all_request,
                     actor=actor,
                 )
 
-                # Filter for failures (score <= 0.3) and sort by similarity
-                failure_results = [r for r in all_results if r.trajectory.outcome_score is not None and r.trajectory.outcome_score <= 0.3]
+                # Categorize into three tiers with complete coverage (no gaps):
+                # - Successes: score >= 0.7
+                # - Moderate: 0.3 < score < 0.7
+                # - Failures: score <= 0.3
+                success_results = []
+                moderate_results = []
+                failure_results = []
+
+                for result in all_results:
+                    score = result.trajectory.outcome_score
+                    if score is not None:
+                        if score >= 0.7:
+                            success_results.append(result)
+                        elif score <= 0.3:
+                            failure_results.append(result)
+                        else:  # 0.3 < score < 0.7
+                            moderate_results.append(result)
+
+                # Sort each category by similarity and limit
+                success_results = sorted(success_results, key=lambda r: r.similarity, reverse=True)[:limit]
+                moderate_results = sorted(moderate_results, key=lambda r: r.similarity, reverse=True)[:limit]
                 failure_results = sorted(failure_results, key=lambda r: r.similarity, reverse=True)[:limit]
 
-                if not success_results and not failure_results:
+                if not success_results and not moderate_results and not failure_results:
                     return "No relevant past experiences found for this query."
 
-                # Format both successes and failures
+                # Format response with all three categories
                 response = {
-                    "message": f"Found {len(success_results)} successes and {len(failure_results)} failures for comparison:",
+                    "message": f"Found {len(success_results)} successes, {len(moderate_results)} moderate outcomes, and {len(failure_results)} failures for comparison:",
                 }
 
                 if success_results:
@@ -398,6 +405,25 @@ class LettaCoreToolExecutor(ToolExecutor):
                                 "step_count": metadata.get("step_count"),
                             }
                         response["successes"].append(result_dict)
+
+                if moderate_results:
+                    response["moderate"] = []
+                    for result in moderate_results:
+                        trajectory = result.trajectory
+                        similarity = result.similarity
+                        result_dict = {
+                            "similarity": f"{similarity:.2f}",
+                            "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                            "summary": trajectory.searchable_summary or "No summary available",
+                        }
+                        if trajectory.data and "metadata" in trajectory.data:
+                            metadata = trajectory.data["metadata"]
+                            result_dict["details"] = {
+                                "status": metadata.get("status"),
+                                "tools_used": metadata.get("tools_used", []),
+                                "step_count": metadata.get("step_count"),
+                            }
+                        response["moderate"].append(result_dict)
 
                 if failure_results:
                     response["failures"] = []
