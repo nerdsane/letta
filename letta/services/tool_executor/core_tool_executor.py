@@ -44,6 +44,7 @@ class LettaCoreToolExecutor(ToolExecutor):
             "conversation_search": self.conversation_search,
             "archival_memory_search": self.archival_memory_search,
             "archival_memory_insert": self.archival_memory_insert,
+            "search_trajectories": self.search_trajectories,
             "core_memory_append": self.core_memory_append,
             "core_memory_replace": self.core_memory_replace,
             "memory_replace": self.memory_replace,
@@ -316,6 +317,187 @@ class LettaCoreToolExecutor(ToolExecutor):
         )
         await self.agent_manager.rebuild_system_prompt_async(agent_id=agent_state.id, actor=actor, force=True)
         return None
+
+    async def search_trajectories(
+        self,
+        agent_state: AgentState,
+        actor: User,
+        query: str,
+        min_score: Optional[float] = 0.5,
+        limit: int = 3,
+        include_contrasts: bool = False,
+    ) -> Optional[str]:
+        """Search past execution experiences to learn from similar situations."""
+        try:
+            from letta.schemas.trajectory import TrajectorySearchRequest
+            from letta.server.server import SyncServer
+
+            # Get trajectory manager from server
+            # Note: We'll need to access the server instance - for now use a direct import pattern
+            from letta.server.rest_api.app import server
+
+            # Ensure limit is reasonable
+            limit = min(limit, 10)  # Cap at 10 results per category
+
+            if include_contrasts:
+                # Get all trajectories and categorize into three tiers: successes, moderate, and failures
+                # This ensures complete coverage with no gaps in the score range
+
+                # Fetch all relevant trajectories (get more to ensure we have enough in each category)
+                all_request = TrajectorySearchRequest(
+                    query=query,
+                    agent_id=agent_state.id,
+                    min_score=0.0,  # Get all
+                    limit=limit * 5,  # Get extra to populate all three categories
+                )
+                all_results = await server.trajectory_manager.search_trajectories_async(
+                    search_request=all_request,
+                    actor=actor,
+                )
+
+                # Categorize into three tiers with complete coverage (no gaps):
+                # - Successes: score >= 0.7
+                # - Moderate: 0.3 < score < 0.7
+                # - Failures: score <= 0.3
+                success_results = []
+                moderate_results = []
+                failure_results = []
+
+                for result in all_results:
+                    score = result.trajectory.outcome_score
+                    if score is not None:
+                        if score >= 0.7:
+                            success_results.append(result)
+                        elif score <= 0.3:
+                            failure_results.append(result)
+                        else:  # 0.3 < score < 0.7
+                            moderate_results.append(result)
+
+                # Sort each category by similarity and limit
+                success_results = sorted(success_results, key=lambda r: r.similarity, reverse=True)[:limit]
+                moderate_results = sorted(moderate_results, key=lambda r: r.similarity, reverse=True)[:limit]
+                failure_results = sorted(failure_results, key=lambda r: r.similarity, reverse=True)[:limit]
+
+                if not success_results and not moderate_results and not failure_results:
+                    return "No relevant past experiences found for this query."
+
+                # Format response with all three categories
+                response = {
+                    "message": f"Found {len(success_results)} successes, {len(moderate_results)} moderate outcomes, and {len(failure_results)} failures for comparison:",
+                }
+
+                if success_results:
+                    response["successes"] = []
+                    for result in success_results:
+                        trajectory = result.trajectory
+                        similarity = result.similarity
+                        result_dict = {
+                            "similarity": f"{similarity:.2f}",
+                            "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                            "summary": trajectory.searchable_summary or "No summary available",
+                        }
+                        if trajectory.data and "metadata" in trajectory.data:
+                            metadata = trajectory.data["metadata"]
+                            result_dict["details"] = {
+                                "status": metadata.get("status"),
+                                "tools_used": metadata.get("tools_used", []),
+                                "step_count": metadata.get("step_count"),
+                            }
+                        response["successes"].append(result_dict)
+
+                if moderate_results:
+                    response["moderate"] = []
+                    for result in moderate_results:
+                        trajectory = result.trajectory
+                        similarity = result.similarity
+                        result_dict = {
+                            "similarity": f"{similarity:.2f}",
+                            "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                            "summary": trajectory.searchable_summary or "No summary available",
+                        }
+                        if trajectory.data and "metadata" in trajectory.data:
+                            metadata = trajectory.data["metadata"]
+                            result_dict["details"] = {
+                                "status": metadata.get("status"),
+                                "tools_used": metadata.get("tools_used", []),
+                                "step_count": metadata.get("step_count"),
+                            }
+                        response["moderate"].append(result_dict)
+
+                if failure_results:
+                    response["failures"] = []
+                    for result in failure_results:
+                        trajectory = result.trajectory
+                        similarity = result.similarity
+                        result_dict = {
+                            "similarity": f"{similarity:.2f}",
+                            "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                            "summary": trajectory.searchable_summary or "No summary available",
+                        }
+                        if trajectory.data and "metadata" in trajectory.data:
+                            metadata = trajectory.data["metadata"]
+                            result_dict["details"] = {
+                                "status": metadata.get("status"),
+                                "tools_used": metadata.get("tools_used", []),
+                                "step_count": metadata.get("step_count"),
+                            }
+                        response["failures"].append(result_dict)
+
+                return response
+
+            else:
+                # Standard search with min_score filter
+                search_request = TrajectorySearchRequest(
+                    query=query,
+                    agent_id=agent_state.id,
+                    min_score=min_score,
+                    limit=limit,
+                )
+
+                results = await server.trajectory_manager.search_trajectories_async(
+                    search_request=search_request,
+                    actor=actor,
+                )
+
+                if not results or len(results) == 0:
+                    return "No relevant past experiences found for this query."
+
+                # Format results for the agent
+                formatted_results = []
+                for result in results:
+                    trajectory = result.trajectory
+                    similarity = result.similarity
+
+                    # Extract key info from trajectory
+                    result_dict = {
+                        "similarity": f"{similarity:.2f}",
+                        "outcome_score": f"{trajectory.outcome_score:.2f}" if trajectory.outcome_score else "N/A",
+                        "summary": trajectory.searchable_summary or "No summary available",
+                    }
+
+                    # Add metadata if available
+                    if trajectory.data and "metadata" in trajectory.data:
+                        metadata = trajectory.data["metadata"]
+                        result_dict["details"] = {
+                            "status": metadata.get("status"),
+                            "tools_used": metadata.get("tools_used", []),
+                            "step_count": metadata.get("step_count"),
+                        }
+
+                    formatted_results.append(result_dict)
+
+                # Return structured results
+                return {
+                    "message": f"Found {len(results)} relevant past experiences:",
+                    "results": formatted_results,
+                }
+
+        except Exception as e:
+            # Log error but don't fail the agent
+            from letta.log import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Error searching trajectories: {e}")
+            return f"Unable to search past experiences: {str(e)}"
 
     async def core_memory_append(self, agent_state: AgentState, actor: User, label: str, content: str) -> Optional[str]:
         if agent_state.memory.get_block(label).read_only:

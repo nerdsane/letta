@@ -629,7 +629,7 @@ class Agent(BaseAgent):
                     return messages, False, True  # force a heartbeat to allow agent to handle error
 
                 # handle trunction
-                if function_name in ["conversation_search", "conversation_search_date", "archival_memory_search"]:
+                if function_name in ["conversation_search", "conversation_search_date", "archival_memory_search", "search_trajectories"]:
                     # with certain functions we rely on the paging mechanism to handle overflow
                     truncate = False
                 else:

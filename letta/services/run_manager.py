@@ -33,6 +33,8 @@ from letta.services.agent_manager import AgentManager
 from letta.services.helpers.agent_manager_helper import validate_agent_exists_async
 from letta.services.message_manager import MessageManager
 from letta.services.step_manager import StepManager
+from letta.services.trajectory_converter import TrajectoryConverter
+from letta.services.trajectory_manager import TrajectoryManager
 from letta.utils import enforce_types
 from letta.validators import raise_on_invalid_id
 
@@ -47,6 +49,8 @@ class RunManager:
         self.step_manager = StepManager()
         self.message_manager = MessageManager()
         self.agent_manager = AgentManager()
+        self.trajectory_converter = TrajectoryConverter()
+        self.trajectory_manager = TrajectoryManager()
 
     @enforce_types
     async def create_run(self, pydantic_run: PydanticRun, actor: PydanticUser) -> PydanticRun:
@@ -419,6 +423,16 @@ class RunManager:
             await metrics.update_async(db_session=session, actor=actor, no_commit=True, no_refresh=True)
             await session.commit()
 
+        # Create trajectory for continual learning (if enabled and run is completing)
+        if is_terminal_update:
+            try:
+                import os
+                if os.getenv("ENABLE_TRAJECTORY_CAPTURE", "false").lower() == "true":
+                    await self._create_trajectory_from_run(run_id=run_id, actor=actor)
+            except Exception as e:
+                # Don't fail the run if trajectory creation fails
+                logger.error(f"Failed to create trajectory for run {run_id}: {e}")
+
         # Dispatch callback outside of database session if needed
         if needs_callback:
             if refresh_result_messages:
@@ -720,3 +734,42 @@ class RunManager:
                 )
 
         return run
+
+    async def _create_trajectory_from_run(self, run_id: str, actor: PydanticUser) -> None:
+        """
+        Create a trajectory from a completed run for continual learning.
+
+        This is called automatically when a run completes if ENABLE_TRAJECTORY_CAPTURE
+        environment variable is set to 'true'.
+
+        Args:
+            run_id: ID of the completed run
+            actor: User creating the trajectory
+        """
+        try:
+            # Fetch run with all associated data
+            async with db_registry.async_session() as session:
+                run = await RunModel.read_async(db_session=session, identifier=run_id, actor=actor)
+
+            # Fetch steps and messages
+            steps = await self.step_manager.list_steps_async(run_id=run_id, actor=actor)
+            messages = await self.message_manager.list_messages(actor=actor, run_id=run_id)
+
+            # Convert to trajectory format
+            trajectory_create = await self.trajectory_converter.from_run(
+                run=run,
+                steps=steps,
+                messages=messages,
+            )
+
+            # Create trajectory in database with async background processing
+            trajectory = await self.trajectory_manager.create_and_process_async(
+                trajectory_create=trajectory_create,
+                actor=actor,
+                auto_process=True,  # Enable background LLM processing (summary, scoring, embedding)
+            )
+
+            logger.info(f"Created trajectory {trajectory.id} from run {run_id} (processing in background)")
+
+        except Exception as e:
+            logger.error(f"Error creating trajectory from run {run_id}: {e}", exc_info=True)

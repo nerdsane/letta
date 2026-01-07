@@ -106,6 +106,7 @@ from letta.services.step_manager import StepManager
 from letta.services.telemetry_manager import TelemetryManager
 from letta.services.tool_executor.tool_execution_manager import ToolExecutionManager
 from letta.services.tool_manager import ToolManager
+from letta.services.trajectory_manager import TrajectoryManager
 from letta.services.user_manager import UserManager
 from letta.settings import DatabaseChoice, model_settings, settings, tool_settings
 from letta.streaming_interface import AgentChunkStreamingInterface
@@ -170,6 +171,7 @@ class SyncServer(object):
         self.group_manager = GroupManager()
         self.batch_manager = LLMBatchManager()
         self.telemetry_manager = TelemetryManager()
+        self.trajectory_manager = TrajectoryManager()
         self.file_agent_manager = FileAgentManager()
         self.file_manager = FileManager()
 

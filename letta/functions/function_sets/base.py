@@ -563,3 +563,68 @@ def memory_finish_edits(agent_state: "AgentState") -> None:  # type: ignore
         Optional[str]: None is always returned as this function does not produce a response.
     """
     return None
+
+
+async def search_trajectories(
+    self: "Agent",
+    query: str,
+    min_score: Optional[float] = 0.5,
+    limit: int = 3,
+    include_contrasts: bool = False,
+) -> Optional[str]:
+    """
+    Search past execution experiences to find similar situations and learn from them.
+
+    This tool searches your execution history (trajectories) to find times when you
+    handled similar tasks or faced similar challenges. Each trajectory captures what
+    you DID during a past run - the decisions made, reasoning performed, and outcomes
+    achieved. Use this to:
+    - Learn from successful past approaches
+    - Avoid repeating past mistakes
+    - Find examples of how you solved similar problems
+    - Retrieve context about previous conversations or tasks
+
+    Search strategy:
+    - Describe what you're trying to accomplish or the challenge you're facing
+    - Results show past executions ranked by semantic similarity
+    - Each result includes the outcome quality score (0-1)
+    - Higher scored trajectories represent more successful executions
+
+    Args:
+        query: Describe the situation or task you want to learn from (e.g., "how did I handle user requests for story generation with specific themes")
+        min_score: Only return trajectories with outcome quality >= this score (0-1). Default 0.5 filters for reasonably successful attempts. Ignored if include_contrasts=True.
+        limit: Maximum number of past experiences to retrieve per category (default: 3, max: 10). If include_contrasts=True, returns up to this many in EACH category (successes, moderate, failures).
+        include_contrasts: If True, returns three categories for comparison: successes (score >= 0.7), moderate outcomes (0.3 < score < 0.7), and failures (score <= 0.3). This provides complete coverage of the outcome spectrum with no gaps. Ignores min_score parameter.
+
+    Returns:
+        A list of relevant past execution experiences with summaries, outcome scores, and key details. When include_contrasts=True, returns a structured response with separate "successes", "moderate", and "failures" categories.
+
+    Examples:
+        # Learn from successful story generation attempts
+        search_trajectories(
+            query="generating science fiction stories about AI consciousness",
+            min_score=0.7,
+            limit=3
+        )
+
+        # Find how you handled similar errors
+        search_trajectories(
+            query="dealing with API timeout errors when calling external services",
+            min_score=0.0,  # Include all outcomes to learn what NOT to do
+            limit=5
+        )
+
+        # Recall context from recent conversations
+        search_trajectories(
+            query="discussions about project roadmap and timeline",
+            limit=2
+        )
+
+        # Compare full outcome spectrum side-by-side
+        search_trajectories(
+            query="generating science fiction stories",
+            limit=3,
+            include_contrasts=True  # Returns up to 3 successes, 3 moderate, AND 3 failures
+        )
+    """
+    raise NotImplementedError("This should never be invoked directly. Contact Letta if you see this error message.")
