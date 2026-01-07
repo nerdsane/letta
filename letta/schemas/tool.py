@@ -6,6 +6,7 @@ from letta.constants import (
     FUNCTION_RETURN_CHAR_LIMIT,
     LETTA_BUILTIN_TOOL_MODULE_NAME,
     LETTA_CORE_TOOL_MODULE_NAME,
+    LETTA_EVALUATION_TOOL_MODULE_NAME,
     LETTA_FILES_TOOL_MODULE_NAME,
     LETTA_MULTI_AGENT_TOOL_MODULE_NAME,
     LETTA_VOICE_TOOL_MODULE_NAME,
@@ -98,11 +99,14 @@ class Tool(BaseTool):
             # If it's letta voice tool, we generate the json_schema on the fly here
             self.json_schema = get_json_schema_from_module(module_name=LETTA_VOICE_TOOL_MODULE_NAME, function_name=self.name)
         elif self.tool_type in {ToolType.LETTA_BUILTIN}:
-            # If it's letta voice tool, we generate the json_schema on the fly here
+            # If it's letta builtin tool, we generate the json_schema on the fly here
             self.json_schema = get_json_schema_from_module(module_name=LETTA_BUILTIN_TOOL_MODULE_NAME, function_name=self.name)
         elif self.tool_type in {ToolType.LETTA_FILES_CORE}:
             # If it's letta files tool, we generate the json_schema on the fly here
             self.json_schema = get_json_schema_from_module(module_name=LETTA_FILES_TOOL_MODULE_NAME, function_name=self.name)
+        elif self.tool_type in {ToolType.LETTA_EVALUATION}:
+            # If it's letta evaluation tool, we generate the json_schema on the fly here
+            self.json_schema = get_json_schema_from_module(module_name=LETTA_EVALUATION_TOOL_MODULE_NAME, function_name=self.name)
 
         return self
 
