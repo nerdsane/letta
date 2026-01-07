@@ -345,9 +345,10 @@ class LettaCoreToolExecutor(ToolExecutor):
                 # This ensures complete coverage with no gaps in the score range
 
                 # Fetch all relevant trajectories (get more to ensure we have enough in each category)
+                # Search across ALL agents to enable cross-agent learning
                 all_request = TrajectorySearchRequest(
                     query=query,
-                    agent_id=agent_state.id,
+                    agent_id=None,  # Search all agents' trajectories
                     min_score=0.0,  # Get all
                     limit=limit * 5,  # Get extra to populate all three categories
                 )
@@ -448,9 +449,10 @@ class LettaCoreToolExecutor(ToolExecutor):
 
             else:
                 # Standard search with min_score filter
+                # Search across ALL agents to enable cross-agent learning
                 search_request = TrajectorySearchRequest(
                     query=query,
-                    agent_id=agent_state.id,
+                    agent_id=None,  # Search all agents' trajectories
                     min_score=min_score,
                     limit=limit,
                 )
