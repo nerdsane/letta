@@ -76,6 +76,7 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
 
     # agent configuration
     agent_type: AgentType = Field(..., description="The type of agent.")
+    domain_type: Optional[str] = Field(None, description="Custom domain classification for cross-org trajectory sharing (e.g., 'story_agent', 'code_agent').")
 
     # model information
     llm_config: LLMConfig = Field(
@@ -215,6 +216,7 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
     tags: Optional[List[str]] = Field(None, description="The tags associated with the agent.")
     system: Optional[str] = Field(None, description="The system prompt used by the agent.")
     agent_type: AgentType = Field(default_factory=lambda: AgentType.letta_v1_agent, description="The type of agent.")
+    domain_type: Optional[str] = Field(None, description="Custom domain classification for cross-org trajectory sharing (e.g., 'story_agent', 'code_agent').")
     # Note: if this is None, then we'll populate with the standard "more human than human" initial message sequence
     # If the client wants to make this empty, then the client can set the arg to an empty list
     initial_message_sequence: Optional[List[MessageCreate]] = Field(
@@ -412,6 +414,7 @@ class InternalTemplateAgentCreate(CreateAgent):
 
 class UpdateAgent(BaseModel):
     name: Optional[str] = Field(None, description="The name of the agent.")
+    domain_type: Optional[str] = Field(None, description="Custom domain classification for cross-org trajectory sharing (e.g., 'story_agent', 'code_agent').")
     tool_ids: Optional[List[str]] = Field(None, description="The ids of the tools used by the agent.")
     source_ids: Optional[List[str]] = Field(
         None, description="Deprecated: Use `folder_ids` field instead. The ids of the sources used by the agent.", deprecated=True

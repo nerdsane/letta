@@ -8,23 +8,29 @@ This manager handles:
 - Embedding generation (for similarity search)
 - Pgvector-based semantic search
 - Async background processing with retry logic
+- Cross-organization sharing with anonymization
 """
 
 import asyncio
+import hashlib
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, desc, func, select, text
 
 from letta.log import get_logger
+from letta.orm.agent import Agent as AgentModel
 from letta.orm.trajectory import Trajectory as TrajectoryModel
 from letta.schemas.trajectory import (
+    AnonymizedTrajectory,
     Trajectory,
     TrajectoryCreate,
     TrajectorySearchRequest,
     TrajectorySearchResult,
     TrajectoryUpdate,
+    TrajectoryVisibility,
 )
 from letta.schemas.user import User as PydanticUser
 from letta.server.db import db_registry
@@ -32,6 +38,9 @@ from letta.services.trajectory_processing import TrajectoryProcessor
 from letta.settings import DatabaseChoice, settings
 
 logger = get_logger(__name__)
+
+# Salt for anonymization hashing - rotate periodically for security
+ANONYMIZATION_SALT = os.environ.get("TRAJECTORY_ANONYMIZATION_SALT", "letta-trajectory-anon-salt-v1")
 
 
 class TrajectoryManager:
@@ -46,13 +55,23 @@ class TrajectoryManager:
         Create a new trajectory.
 
         Processing (summary, scoring, embedding) happens asynchronously after creation.
+        Domain type is inherited from the agent for cross-org sharing support.
         """
         async with db_registry.async_session() as session:
             async with session.begin():
+                # Fetch agent to get domain_type
+                agent_domain_type = None
+                if trajectory_create.agent_id:
+                    agent = await session.get(AgentModel, trajectory_create.agent_id)
+                    if agent:
+                        agent_domain_type = agent.domain_type
+
                 # Create ORM object
                 trajectory_orm = TrajectoryModel(
                     agent_id=trajectory_create.agent_id,
                     organization_id=actor.organization_id,
+                    domain_type=agent_domain_type,  # Inherit from agent
+                    share_cross_org=False,  # Default opt-out for privacy
                     data=trajectory_create.data,
                     # LLM fields populated later
                     searchable_summary=None,
@@ -170,6 +189,7 @@ class TrajectoryManager:
         Search for similar trajectories using semantic similarity (pgvector).
 
         This is the core retrieval mechanism for context learning.
+        Supports cross-organization search with anonymization when include_cross_org=True.
         """
         # Generate embedding for the search query
         query_embedding = await self.processor.generate_embedding(search_request.query)
@@ -183,57 +203,114 @@ class TrajectoryManager:
                 max_score=search_request.max_score,
                 limit=search_request.limit,
             )
-            return [TrajectorySearchResult(trajectory=t, similarity=0.0) for t in trajectories]
+            return [TrajectorySearchResult(trajectory=t, similarity=0.0, visibility=TrajectoryVisibility.FULL) for t in trajectories]
+
+        results = []
 
         async with db_registry.async_session() as session:
             # Build similarity search query
             if settings.database_engine == DatabaseChoice.POSTGRES:
                 # Use pgvector cosine similarity (<=> operator)
-                # Note: The embedding column needs to exist and have pgvector index for this to work
                 from pgvector.sqlalchemy import Vector
 
                 # Calculate cosine similarity (1 - cosine distance)
                 similarity_expr = TrajectoryModel.embedding.cosine_distance(query_embedding).label("distance")
 
-                query = (
+                # 1. Same-org query (full detail)
+                same_org_query = (
                     select(TrajectoryModel, (1 - similarity_expr).label("similarity"))
                     .where(
-                        TrajectoryModel.embedding.isnot(None),  # Only search trajectories with embeddings
+                        TrajectoryModel.embedding.isnot(None),
                         TrajectoryModel.organization_id == actor.organization_id,
                     )
-                    .order_by(similarity_expr)  # Order by distance (ascending = most similar first)
+                    .order_by(similarity_expr)
                 )
 
-                # Apply filters
+                # Apply filters to same-org query
                 if search_request.agent_id:
-                    query = query.where(TrajectoryModel.agent_id == search_request.agent_id)
+                    same_org_query = same_org_query.where(TrajectoryModel.agent_id == search_request.agent_id)
+                if search_request.domain_type:
+                    same_org_query = same_org_query.where(TrajectoryModel.domain_type == search_request.domain_type)
                 if search_request.min_score is not None:
-                    query = query.where(TrajectoryModel.outcome_score >= search_request.min_score)
+                    same_org_query = same_org_query.where(TrajectoryModel.outcome_score >= search_request.min_score)
                 if search_request.max_score is not None:
-                    query = query.where(TrajectoryModel.outcome_score <= search_request.max_score)
+                    same_org_query = same_org_query.where(TrajectoryModel.outcome_score <= search_request.max_score)
                 if search_request.task_category:
-                    query = query.where(TrajectoryModel.task_category == search_request.task_category)
+                    same_org_query = same_org_query.where(TrajectoryModel.task_category == search_request.task_category)
                 if search_request.complexity_level:
-                    query = query.where(TrajectoryModel.complexity_level == search_request.complexity_level)
+                    same_org_query = same_org_query.where(TrajectoryModel.complexity_level == search_request.complexity_level)
                 if search_request.tags:
-                    # For PostgreSQL: check if trajectory has ALL specified tags using array contains (@>)
                     for tag in search_request.tags:
-                        query = query.where(TrajectoryModel.tags.contains([tag]))
+                        same_org_query = same_org_query.where(TrajectoryModel.tags.contains([tag]))
 
-                # Limit results
-                query = query.limit(search_request.limit)
+                same_org_query = same_org_query.limit(search_request.limit)
+                same_org_result = await session.execute(same_org_query)
 
-                # Execute query
-                result = await session.execute(query)
-                rows = result.all()
+                for trajectory_orm, similarity in same_org_result.all():
+                    results.append(TrajectorySearchResult(
+                        trajectory=self._orm_to_pydantic(trajectory_orm),
+                        similarity=float(similarity),
+                        visibility=TrajectoryVisibility.FULL,
+                    ))
 
-                # Convert to search results
-                results = [
-                    TrajectorySearchResult(trajectory=self._orm_to_pydantic(trajectory_orm), similarity=float(similarity))
-                    for trajectory_orm, similarity in rows
-                ]
+                # 2. Cross-org query (anonymized) - only if requested AND domain_type specified
+                if search_request.include_cross_org and search_request.domain_type:
+                    cross_org_query = (
+                        select(TrajectoryModel, (1 - similarity_expr).label("similarity"))
+                        .where(
+                            TrajectoryModel.embedding.isnot(None),
+                            TrajectoryModel.organization_id != actor.organization_id,
+                            TrajectoryModel.domain_type == search_request.domain_type,
+                            TrajectoryModel.share_cross_org == True,
+                        )
+                        .order_by(similarity_expr)
+                    )
 
-                return results
+                    # Apply score/category/complexity filters to cross-org
+                    if search_request.min_score is not None:
+                        cross_org_query = cross_org_query.where(TrajectoryModel.outcome_score >= search_request.min_score)
+                    if search_request.max_score is not None:
+                        cross_org_query = cross_org_query.where(TrajectoryModel.outcome_score <= search_request.max_score)
+                    if search_request.task_category:
+                        cross_org_query = cross_org_query.where(TrajectoryModel.task_category == search_request.task_category)
+                    if search_request.complexity_level:
+                        cross_org_query = cross_org_query.where(TrajectoryModel.complexity_level == search_request.complexity_level)
+                    if search_request.tags:
+                        for tag in search_request.tags:
+                            cross_org_query = cross_org_query.where(TrajectoryModel.tags.contains([tag]))
+
+                    cross_org_query = cross_org_query.limit(search_request.limit)
+                    cross_org_result = await session.execute(cross_org_query)
+
+                    for trajectory_orm, similarity in cross_org_result.all():
+                        # Create anonymized trajectory
+                        anonymized = self._anonymize_trajectory(trajectory_orm)
+                        # Wrap in Trajectory for API consistency
+                        results.append(TrajectorySearchResult(
+                            trajectory=Trajectory(
+                                id=anonymized.id,
+                                agent_id=anonymized.agent_id,
+                                domain_type=anonymized.domain_type,
+                                share_cross_org=True,
+                                data=anonymized.data,
+                                searchable_summary=anonymized.searchable_summary,
+                                outcome_score=anonymized.outcome_score,
+                                score_reasoning=anonymized.score_reasoning,
+                                tags=anonymized.tags,
+                                task_category=anonymized.task_category,
+                                complexity_level=anonymized.complexity_level,
+                                trajectory_metadata=anonymized.trajectory_metadata,
+                                processing_status="completed",
+                                created_at=anonymized.created_at,
+                                organization_id=anonymized.source_organization_hash,
+                            ),
+                            similarity=float(similarity),
+                            visibility=TrajectoryVisibility.ANONYMIZED,
+                        ))
+
+                # Sort all results by similarity and limit
+                results.sort(key=lambda r: r.similarity, reverse=True)
+                return results[:search_request.limit]
 
             else:
                 # SQLite fallback: no pgvector support
@@ -245,7 +322,7 @@ class TrajectoryManager:
                     max_score=search_request.max_score,
                     limit=search_request.limit,
                 )
-                return [TrajectorySearchResult(trajectory=t, similarity=0.0) for t in trajectories]
+                return [TrajectorySearchResult(trajectory=t, similarity=0.0, visibility=TrajectoryVisibility.FULL) for t in trajectories]
 
     async def process_trajectory_async(self, trajectory_id: str, actor: PydanticUser) -> Optional[Trajectory]:
         """
@@ -479,6 +556,8 @@ class TrajectoryManager:
         return Trajectory(
             id=trajectory_orm.id,
             agent_id=trajectory_orm.agent_id,
+            domain_type=trajectory_orm.domain_type,
+            share_cross_org=trajectory_orm.share_cross_org,
             data=trajectory_orm.data,
             searchable_summary=trajectory_orm.searchable_summary,
             outcome_score=trajectory_orm.outcome_score,
@@ -495,3 +574,185 @@ class TrajectoryManager:
             updated_at=trajectory_orm.updated_at,
             organization_id=trajectory_orm.organization_id,
         )
+
+    def _hash_identifier(self, value: str) -> str:
+        """Hash an identifier for privacy in cross-org sharing."""
+        h = hashlib.sha256(f"{ANONYMIZATION_SALT}{value}".encode()).hexdigest()[:8]
+        return f"[REDACTED:{h}]"
+
+    def _anonymize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Anonymize trajectory data for cross-org sharing.
+
+        Preserves structural metadata, redacts message content.
+        """
+        result = {}
+
+        # Preserve metadata structure, anonymize content
+        if "metadata" in data:
+            result["metadata"] = {
+                # Keep structural metrics
+                "step_count": data["metadata"].get("step_count"),
+                "message_count": data["metadata"].get("message_count"),
+                "input_tokens": data["metadata"].get("input_tokens"),
+                "output_tokens": data["metadata"].get("output_tokens"),
+                "total_tokens": data["metadata"].get("total_tokens"),
+                "tools_used": data["metadata"].get("tools_used"),  # Tool names are public
+                "models": data["metadata"].get("models"),  # Model names are public
+                "duration_ns": data["metadata"].get("duration_ns"),
+            }
+
+        # Anonymize turns - keep structure, redact content
+        if "turns" in data:
+            result["turns"] = [
+                {
+                    "model": turn.get("model"),
+                    "input_tokens": turn.get("input_tokens"),
+                    "output_tokens": turn.get("output_tokens"),
+                    "message_count": len(turn.get("messages", [])),
+                    "tool_calls_count": sum(
+                        len(m.get("tool_calls", []) or [])
+                        for m in turn.get("messages", [])
+                    ),
+                    # Messages completely redacted
+                    "messages": "[REDACTED]"
+                }
+                for turn in data.get("turns", [])
+            ]
+
+        # Preserve outcome structure (already LLM-generated, abstract)
+        if "outcome" in data:
+            result["outcome"] = data["outcome"]
+
+        return result
+
+    def _anonymize_trajectory(self, trajectory_orm: TrajectoryModel) -> AnonymizedTrajectory:
+        """
+        Create anonymized view of trajectory for cross-org sharing.
+
+        Preserves learning signal while protecting privacy:
+        - Preserved: summary, score, tags, embeddings, structural metadata
+        - Redacted: message content, tool arguments, identifiers
+        """
+        return AnonymizedTrajectory(
+            id=self._hash_identifier(trajectory_orm.id),
+            agent_id=self._hash_identifier(trajectory_orm.agent_id),
+            domain_type=trajectory_orm.domain_type or "",
+            searchable_summary=trajectory_orm.searchable_summary,
+            outcome_score=trajectory_orm.outcome_score,
+            score_reasoning=trajectory_orm.score_reasoning,
+            tags=trajectory_orm.tags,
+            task_category=trajectory_orm.task_category,
+            complexity_level=trajectory_orm.complexity_level,
+            trajectory_metadata=trajectory_orm.trajectory_metadata,
+            data=self._anonymize_data(trajectory_orm.data),
+            visibility=TrajectoryVisibility.ANONYMIZED,
+            source_organization_hash=self._hash_identifier(trajectory_orm.organization_id or ""),
+            created_at=trajectory_orm.created_at,
+        )
+
+    async def set_trajectory_sharing_async(
+        self,
+        trajectory_id: str,
+        share_cross_org: bool,
+        actor: PydanticUser
+    ) -> Optional[Trajectory]:
+        """
+        Enable or disable cross-organization sharing for a trajectory.
+
+        When enabled, the trajectory becomes searchable by other organizations,
+        but they only see an anonymized version (PII redacted).
+        """
+        async with db_registry.async_session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(TrajectoryModel).where(
+                        TrajectoryModel.id == trajectory_id,
+                        TrajectoryModel.organization_id == actor.organization_id
+                    )
+                )
+                trajectory_orm = result.scalar_one_or_none()
+
+                if not trajectory_orm:
+                    return None
+
+                trajectory_orm.share_cross_org = share_cross_org
+                await session.flush()
+                await session.refresh(trajectory_orm)
+
+                return self._orm_to_pydantic(trajectory_orm)
+
+    async def list_trajectories_by_domain_async(
+        self,
+        domain_type: str,
+        actor: PydanticUser,
+        include_cross_org: bool = False,
+        limit: int = 50,
+    ) -> List[TrajectorySearchResult]:
+        """
+        List trajectories by domain type with optional cross-org inclusion.
+
+        Returns same-org trajectories as full detail, cross-org as anonymized.
+        """
+        results = []
+
+        async with db_registry.async_session() as session:
+            # Same-org: full detail
+            same_org_query = (
+                select(TrajectoryModel)
+                .where(
+                    TrajectoryModel.organization_id == actor.organization_id,
+                    TrajectoryModel.domain_type == domain_type,
+                )
+                .order_by(desc(TrajectoryModel.created_at))
+                .limit(limit)
+            )
+            same_org_result = await session.execute(same_org_query)
+            for traj in same_org_result.scalars().all():
+                results.append(TrajectorySearchResult(
+                    trajectory=self._orm_to_pydantic(traj),
+                    similarity=1.0,  # Not similarity-based
+                    visibility=TrajectoryVisibility.FULL,
+                ))
+
+            # Cross-org: anonymized (if requested)
+            if include_cross_org:
+                cross_org_query = (
+                    select(TrajectoryModel)
+                    .where(
+                        TrajectoryModel.organization_id != actor.organization_id,
+                        TrajectoryModel.domain_type == domain_type,
+                        TrajectoryModel.share_cross_org == True,
+                    )
+                    .order_by(desc(TrajectoryModel.created_at))
+                    .limit(limit)
+                )
+                cross_org_result = await session.execute(cross_org_query)
+                for traj in cross_org_result.scalars().all():
+                    # Return anonymized trajectory wrapped in the result
+                    # Note: We create a Trajectory from the anonymized data for API compatibility
+                    anonymized = self._anonymize_trajectory(traj)
+                    # Convert to Trajectory for consistent return type
+                    results.append(TrajectorySearchResult(
+                        trajectory=Trajectory(
+                            id=anonymized.id,
+                            agent_id=anonymized.agent_id,
+                            domain_type=anonymized.domain_type,
+                            share_cross_org=True,
+                            data=anonymized.data,
+                            searchable_summary=anonymized.searchable_summary,
+                            outcome_score=anonymized.outcome_score,
+                            score_reasoning=anonymized.score_reasoning,
+                            tags=anonymized.tags,
+                            task_category=anonymized.task_category,
+                            complexity_level=anonymized.complexity_level,
+                            trajectory_metadata=anonymized.trajectory_metadata,
+                            processing_status="completed",
+                            created_at=anonymized.created_at,
+                            organization_id=anonymized.source_organization_hash,
+                        ),
+                        similarity=1.0,
+                        visibility=TrajectoryVisibility.ANONYMIZED,
+                    ))
+
+        return results[:limit]

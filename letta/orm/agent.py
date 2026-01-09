@@ -53,6 +53,10 @@ class Agent(SqlalchemyBase, OrganizationMixin, ProjectMixin, TemplateEntityMixin
 
     # Descriptor fields
     agent_type: Mapped[Optional[AgentType]] = mapped_column(String, nullable=True, doc="The type of Agent")
+    domain_type: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True,
+        doc="Custom domain classification for cross-org trajectory sharing (e.g., 'story_agent', 'code_agent')"
+    )
     name: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="a human-readable identifier for an agent, non-unique.")
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The description of the agent.")
 
@@ -228,6 +232,7 @@ class Agent(SqlalchemyBase, OrganizationMixin, ProjectMixin, TemplateEntityMixin
         state = {
             "id": self.id,
             "agent_type": self.agent_type,
+            "domain_type": self.domain_type,
             "name": self.name,
             "description": self.description,
             "system": self.system,
@@ -335,6 +340,7 @@ class Agent(SqlalchemyBase, OrganizationMixin, ProjectMixin, TemplateEntityMixin
         state = {
             "id": self.id,
             "agent_type": self.agent_type,
+            "domain_type": self.domain_type,
             "name": self.name,
             "description": self.description,
             "system": self.system,

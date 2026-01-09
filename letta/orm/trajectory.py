@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, ARRAY, Column, DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, ARRAY, Boolean, Column, DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from letta.constants import MAX_EMBEDDING_DIM
@@ -49,6 +49,10 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
         Index("ix_trajectories_outcome_score", "outcome_score"),
         Index("ix_trajectories_task_category", "task_category"),
         Index("ix_trajectories_complexity_level", "complexity_level"),
+        # Cross-org sharing indexes
+        Index("ix_trajectories_domain_type", "domain_type"),
+        Index("ix_trajectories_share_cross_org", "share_cross_org"),
+        Index("ix_trajectories_domain_share", "domain_type", "share_cross_org"),
         # GIN index for array contains queries on tags (PostgreSQL only)
         Index("ix_trajectories_tags", "tags", postgresql_using="gin") if settings.database_engine is DatabaseChoice.POSTGRES else None,
     )
@@ -59,6 +63,16 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
     # Agent relationship
     agent_id: Mapped[str] = mapped_column(
         String, ForeignKey("agents.id"), nullable=False, doc="The agent that generated this trajectory"
+    )
+
+    # Cross-organization sharing fields
+    domain_type: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True,
+        doc="Custom domain type for cross-org sharing (e.g., 'story_agent', 'code_agent')"
+    )
+    share_cross_org: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False,
+        doc="Whether this trajectory is visible (anonymized) to other organizations"
     )
 
     # Core trajectory data (flexible JSONB)

@@ -3,6 +3,8 @@ Trajectory API endpoints for capturing and retrieving agent execution traces.
 
 Trajectories enable continual learning by capturing what agents DID (decisions, reasoning, outcomes)
 and making that experience searchable and learnable.
+
+Supports cross-organization sharing with privacy-preserving anonymization.
 """
 
 from typing import List, Optional
@@ -15,7 +17,9 @@ from letta.schemas.trajectory import (
     TrajectorySearchRequest,
     TrajectorySearchResponse,
     TrajectorySearchResult,
+    TrajectoryShareUpdate,
     TrajectoryUpdate,
+    TrajectoryVisibility,
 )
 from pydantic import BaseModel
 from letta.server.rest_api.dependencies import HeaderParams, get_headers, get_letta_server
@@ -185,19 +189,90 @@ async def search_trajectories(
     - Filter by outcome score to find successes (min_score=0.7) or failures (max_score=0.4)
     - Use results as few-shot examples for current execution
 
+    Cross-Organization Support:
+    Set `include_cross_org=true` and specify `domain_type` to include anonymized
+    trajectories from other organizations that share the same domain.
+
     Example:
     {
       "query": "User wants story about consciousness upload with identity fragmentation",
       "agent_id": "agent-123",
+      "domain_type": "story_agent",
+      "include_cross_org": true,
       "min_score": 0.7,
-      "limit": 3
+      "limit": 10
     }
 
     Returns trajectories ordered by semantic similarity to the query.
+    Cross-org results have `visibility: "anonymized"` and redacted content.
     """
     actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
     results = await server.trajectory_manager.search_trajectories_async(search_request=search_request, actor=actor)
     return TrajectorySearchResponse(results=results, query=search_request.query)
+
+
+@router.patch("/{trajectory_id}/sharing", response_model=Trajectory)
+async def update_trajectory_sharing(
+    trajectory_id: str,
+    share_update: TrajectoryShareUpdate = Body(...),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Enable or disable cross-organization sharing for a trajectory.
+
+    When enabled (share_cross_org=true):
+    - Trajectory becomes searchable by other organizations
+    - Other orgs see an anonymized version (PII redacted, identifiers hashed)
+    - Your organization still sees full detail
+
+    Privacy protection:
+    - Message content is redacted
+    - Tool arguments are redacted
+    - Identifiers (agent_id, org_id) are hashed
+    - Only learning signal preserved (summary, score, tags, structural metadata)
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.set_trajectory_sharing_async(
+        trajectory_id=trajectory_id,
+        share_cross_org=share_update.share_cross_org,
+        actor=actor,
+    )
+
+    if not trajectory:
+        raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
+
+    return trajectory
+
+
+@router.get("/by-domain/{domain_type}", response_model=List[TrajectorySearchResult])
+async def list_trajectories_by_domain(
+    domain_type: str,
+    include_cross_org: bool = Query(False, description="Include anonymized cross-org trajectories"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum results"),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    List trajectories by domain type with optional cross-org inclusion.
+
+    Domain types are custom categories like "story_agent", "code_agent", "research_agent"
+    that group trajectories for cross-organization sharing.
+
+    If include_cross_org=true:
+    - Same-org trajectories: full detail, visibility="full"
+    - Cross-org trajectories: anonymized, visibility="anonymized"
+
+    Cross-org trajectories are only included if they have share_cross_org=true.
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    results = await server.trajectory_manager.list_trajectories_by_domain_async(
+        domain_type=domain_type,
+        actor=actor,
+        include_cross_org=include_cross_org,
+        limit=limit,
+    )
+    return results
 
 
 @router.post("/{trajectory_id}/process", response_model=Trajectory)
