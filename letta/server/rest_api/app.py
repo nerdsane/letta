@@ -226,6 +226,41 @@ def create_application() -> "FastAPI":
             },
         )
 
+    # Initialize Pydantic Logfire for LLM observability
+    if telemetry_settings.enable_logfire:
+        try:
+            import logfire
+
+            logfire_env = settings.environment or "development"
+            print(f"▶ Initializing Pydantic Logfire (env={logfire_env})")
+
+            # Configure Logfire
+            logfire.configure(
+                token=telemetry_settings.logfire_token,
+                service_name=telemetry_settings.logfire_service_name,
+                service_version=letta_version,
+                environment=logfire_env,
+                console=telemetry_settings.logfire_console_log,
+            )
+
+            # Auto-instrument LLM providers (OpenAI, Anthropic)
+            logfire.instrument_openai()
+            logfire.instrument_anthropic()
+
+            # Auto-instrument HTTP client (httpx)
+            logfire.instrument_httpx()
+
+            logger.info(
+                f"Logfire initialized: env={logfire_env}, "
+                f"service={telemetry_settings.logfire_service_name}, "
+                f"console_log={telemetry_settings.logfire_console_log}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Logfire: {e}", exc_info=True)
+            if SENTRY_ENABLED:
+                sentry_sdk.capture_exception(e)
+            # Don't fail application startup if Logfire initialization fails
+
     if telemetry_settings.enable_datadog:
         try:
             dd_env = settings.environment or "development"
@@ -297,6 +332,16 @@ def create_application() -> "FastAPI":
         debug=debug_mode,  # if True, the stack trace will be printed in the response
         lifespan=lifespan,
     )
+
+    # Instrument FastAPI with Logfire (after app creation)
+    if telemetry_settings.enable_logfire:
+        try:
+            import logfire
+
+            logfire.instrument_fastapi(app)
+            logger.info("Logfire FastAPI instrumentation enabled")
+        except Exception as e:
+            logger.warning(f"Failed to instrument FastAPI with Logfire: {e}")
 
     # === Global Exception Handlers ===
     # Set up handlers for exceptions outside of request context (background tasks, threads, etc.)

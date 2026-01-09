@@ -73,6 +73,7 @@ dependencies = [
     "datadog>=0.49.1",
     "psutil>=5.9.0",
     "ddtrace>=4.0.1",
+    "logfire[fastapi,openai,anthropic,httpx,sqlalchemy]>=3.0.0",
 ]
 
 [project.scripts]

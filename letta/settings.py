@@ -421,6 +421,16 @@ class TelemetrySettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="letta_telemetry_", extra="ignore")
 
+    # Pydantic Logfire - LLM Observability
+    enable_logfire: bool = Field(default=False, description="Enable Pydantic Logfire for LLM observability and tracing.")
+    logfire_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LOGFIRE_TOKEN", "letta_telemetry_logfire_token"),
+        description="Logfire API token. Get one at https://logfire.pydantic.dev",
+    )
+    logfire_service_name: str = Field(default="letta-server", description="Service name for Logfire tracing.")
+    logfire_console_log: bool = Field(default=False, description="Enable Logfire console logging for local development.")
+
     # Datadog APM and Profiling
     enable_datadog: bool = Field(default=False, description="Enable Datadog profiling. Environment is pulled from settings.environment.")
     datadog_agent_host: str = Field(
