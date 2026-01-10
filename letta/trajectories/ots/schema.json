@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://letta.ai/schemas/ots/v0.1/trajectory.json",
+  "title": "Open Trajectory Specification",
+  "description": "A decision trace format for agent continual learning",
+  "type": "object",
+  "required": ["trajectory_id", "version", "metadata", "turns"],
+  "properties": {
+    "trajectory_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this trajectory"
+    },
+    "version": {
+      "type": "string",
+      "const": "0.1-draft",
+      "description": "OTS format version"
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "context": {
+      "$ref": "#/$defs/context"
+    },
+    "system_message": {
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "turns": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/turn" }
+    },
+    "final_reward": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Trajectory-level outcome signal for RL"
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["task_description", "timestamp_start", "agent_id", "framework", "outcome"],
+      "properties": {
+        "task_description": { "type": "string" },
+        "domain": { "type": "string" },
+        "timestamp_start": { "type": "string", "format": "date-time" },
+        "timestamp_end": { "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "number" },
+        "agent_id": { "type": "string" },
+        "framework": { "type": "string" },
+        "environment": {
+          "type": "string",
+          "enum": ["prod", "staging", "dev"]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["success", "partial_success", "failure"]
+        },
+        "feedback_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "human_reviewed": { "type": "boolean" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "parent_trajectory_id": { "type": "string" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "referrer": { "type": "string" },
+        "user": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "handle": { "type": "string" },
+            "org_id": { "type": "string" },
+            "teams": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "timezone": { "type": "string" }
+          }
+        },
+        "entities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/entity" }
+        },
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resource" }
+        },
+        "custom_context": { "type": "string" }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "metadata": { "type": "object" }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "required": ["type", "uri"],
+      "properties": {
+        "type": { "type": "string" },
+        "uri": { "type": "string" },
+        "accessed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "required": ["turn_id", "span_id", "timestamp", "messages"],
+      "properties": {
+        "turn_id": { "type": "integer" },
+        "span_id": { "type": "string" },
+        "parent_span_id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "number" },
+        "error": { "type": "boolean" },
+        "turn_reward": { "type": "number" },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/message" }
+        },
+        "decisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/decision" },
+          "description": "Atomic decision points extracted from this turn"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "required": ["message_id", "role", "timestamp", "content"],
+      "properties": {
+        "message_id": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant", "system", "tool"]
+        },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "content": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["text", "tool_call", "tool_response", "widget", "dashboard", "structured"]
+            },
+            "data": { "type": "object" },
+            "text": { "type": "string" }
+          }
+        },
+        "reasoning": {
+          "type": "string",
+          "description": "Chain-of-thought reasoning (assistant only)"
+        },
+        "visibility": {
+          "type": "object",
+          "properties": {
+            "send_to_user": { "type": "boolean" },
+            "persist": { "type": "boolean" }
+          }
+        },
+        "context_snapshot": {
+          "type": "object",
+          "properties": {
+            "entities": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "available_tools": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["decision_id", "decision_type", "choice", "consequence"],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "description": "Unique within trajectory"
+        },
+        "decision_type": {
+          "type": "string",
+          "enum": ["tool_selection", "parameter_choice", "reasoning_step", "response_formulation"]
+        },
+        "state": {
+          "type": "object",
+          "properties": {
+            "context_summary": { "type": "string" },
+            "available_actions": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "alternatives": {
+          "type": "object",
+          "properties": {
+            "considered": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "action": { "type": "string" },
+                  "rationale": { "type": "string" },
+                  "rejected_reason": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "choice": {
+          "type": "object",
+          "required": ["action"],
+          "properties": {
+            "action": { "type": "string" },
+            "arguments": { "type": "object" },
+            "rationale": { "type": "string" },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "consequence": {
+          "type": "object",
+          "required": ["success"],
+          "properties": {
+            "success": { "type": "boolean" },
+            "result_summary": { "type": "string" },
+            "error_type": { "type": "string" }
+          }
+        },
+        "evaluation": {
+          "$ref": "#/$defs/decision_evaluation"
+        },
+        "credit_assignment": {
+          "type": "object",
+          "properties": {
+            "contribution_to_outcome": {
+              "type": "number",
+              "minimum": -1,
+              "maximum": 1
+            },
+            "pivotal": { "type": "boolean" },
+            "explanation": { "type": "string" }
+          }
+        }
+      }
+    },
+    "decision_evaluation": {
+      "type": "object",
+      "properties": {
+        "evaluator_id": { "type": "string" },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "criteria_scores": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "feedback": { "type": "string" },
+        "counterfactual": {
+          "type": "object",
+          "properties": {
+            "better_alternative": { "type": "string" },
+            "estimated_improvement": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

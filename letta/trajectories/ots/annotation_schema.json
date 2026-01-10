@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://letta.ai/schemas/ots/v0.1/annotation.json",
+  "title": "OTS Annotation",
+  "description": "Linked annotation for trajectory, turn, or decision evaluation",
+  "type": "object",
+  "required": ["annotation_id", "trajectory_id", "evaluator", "score", "timestamp"],
+  "properties": {
+    "annotation_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this annotation"
+    },
+    "trajectory_id": {
+      "type": "string",
+      "description": "Foreign key to trajectory"
+    },
+    "turn_id": {
+      "type": "integer",
+      "description": "Optional: null = trajectory-level annotation"
+    },
+    "decision_id": {
+      "type": "string",
+      "description": "Optional: null = turn-level annotation"
+    },
+    "evaluator": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Evaluator identifier"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["human", "model", "heuristic"]
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Quality score"
+    },
+    "label": {
+      "type": "string",
+      "description": "Optional categorical label"
+    },
+    "feedback": {
+      "type": "string",
+      "description": "Optional text feedback"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

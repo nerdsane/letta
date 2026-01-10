@@ -27,6 +27,7 @@ class PrimitiveType(str, Enum):
     STEP = "step"
     IDENTITY = "identity"
     TRAJECTORY = "trajectory"
+    ANNOTATION = "annotation"
 
     # Infrastructure types
     MCP_SERVER = "mcp_server"

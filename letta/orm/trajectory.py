@@ -135,3 +135,12 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="trajectories")
     organization: Mapped[Optional["Organization"]] = relationship("Organization", back_populates="trajectories")
+    annotations: Mapped[list["TrajectoryAnnotation"]] = relationship(
+        "TrajectoryAnnotation",
+        back_populates="trajectory",
+        cascade="all, delete-orphan"
+    )
+
+
+if TYPE_CHECKING:
+    from letta.orm.trajectory_annotation import TrajectoryAnnotation
