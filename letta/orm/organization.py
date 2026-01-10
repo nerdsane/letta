@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from letta.orm.sandbox_config import AgentEnvironmentVariable, SandboxConfig, SandboxEnvironmentVariable
     from letta.orm.tool import Tool
     from letta.orm.trajectory import Trajectory
+    from letta.orm.trajectory_annotation import TrajectoryAnnotation
     from letta.orm.user import User
 
 
@@ -78,6 +79,9 @@ class Organization(SqlalchemyBase):
     jobs: Mapped[List["Job"]] = relationship("Job", back_populates="organization", cascade="all, delete-orphan")
     runs: Mapped[List["Run"]] = relationship("Run", back_populates="organization", cascade="all, delete-orphan")
     trajectories: Mapped[List["Trajectory"]] = relationship("Trajectory", back_populates="organization", cascade="all, delete-orphan")
+    trajectory_annotations: Mapped[List["TrajectoryAnnotation"]] = relationship(
+        "TrajectoryAnnotation", back_populates="organization", cascade="all, delete-orphan"
+    )
     provider_traces: Mapped[List["ProviderTrace"]] = relationship(
         "ProviderTrace", back_populates="organization", cascade="all, delete-orphan"
     )
