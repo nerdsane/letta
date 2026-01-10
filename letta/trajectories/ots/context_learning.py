@@ -1,5 +1,5 @@
 """
-Context Learning Retrieval for DSF agents.
+Context Learning Retrieval for agents.
 
 Retrieves relevant past decisions to provide as context for new agent actions.
 This enables agents to learn from their past experiences without retraining.
@@ -7,11 +7,16 @@ This enables agents to learn from their past experiences without retraining.
 Key concepts:
 - Decision retrieval: Find similar past decisions at inference time
 - Context formatting: Convert decisions to agent-consumable format
-- Domain filtering: Filter by world, story, rule relevance
-- Outcome-aware: Prefer high-scoring, successful decisions
+- Flexible filtering: Filter by domain, entity_type, entity_id, action_type, tags
+- Outcome-aware: Prefer high-scoring, successful decisions; optionally include failures as anti-patterns
+
+IMPORTANT: This module provides a generic `search()` method with flexible filters.
+Domain-specific convenience methods (get_similar_world_decisions, etc.) are deprecated
+and will be removed in a future version. Use `search()` with appropriate filters instead.
 """
 
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from letta.log import get_logger
@@ -34,9 +39,19 @@ class RetrievedExample:
     trajectory_id: str
     similarity: float
     outcome_score: Optional[float]
-    world_context: Optional[str]  # Which world this came from
-    story_context: Optional[str]  # Which story this came from
-    formatted_text: str  # Pre-formatted for agent consumption
+    context_info: Dict[str, Any] = field(default_factory=dict)  # Generic context (domain, entities, etc.)
+    formatted_text: str = ""  # Pre-formatted for agent consumption
+
+    # Deprecated: Use context_info instead
+    @property
+    def world_context(self) -> Optional[str]:
+        """Deprecated: Use context_info['world'] instead."""
+        return self.context_info.get("world")
+
+    @property
+    def story_context(self) -> Optional[str]:
+        """Deprecated: Use context_info['story'] instead."""
+        return self.context_info.get("story")
 
 
 @dataclass
@@ -45,28 +60,36 @@ class ContextLearningResult:
 
     query: str
     examples: List[RetrievedExample]
-    total_candidates: int
-    filter_summary: Dict[str, Any]
-    formatted_context: str  # Ready-to-use context for agent
+    anti_patterns: List[RetrievedExample] = field(default_factory=list)  # Failure examples
+    total_candidates: int = 0
+    filter_summary: Dict[str, Any] = field(default_factory=dict)
+    formatted_context: str = ""  # Ready-to-use context for agent
 
 
-class DSFContextLearning:
+class ContextLearning:
     """
-    Context learning retrieval for DSF agents.
+    Generic context learning retrieval for agents.
 
     Retrieves and formats relevant past decisions to include in agent context.
     This is the "retrieval" part of in-context learning - providing relevant
     examples from past successful trajectories.
 
+    The primary method is `search()` which accepts flexible filters:
+    - domain: Filter by domain (e.g., "dsf")
+    - entity_type: Filter by entity type (e.g., "world", "story")
+    - entity_id: Filter by specific entity ID
+    - action_type: Filter by tool/action name
+    - tags: Filter by tags
+
     Usage:
-        learner = DSFContextLearning()
-        context = await learner.get_context_for_action(
-            current_situation="Agent is creating a story in the Nexus world",
-            action_type="story_manager",
+        learner = ContextLearning()
+        result = await learner.search(
+            query="creating world rules",
             actor=user,
-            world_checkpoint="nexus-v3",
+            filters={"domain": "dsf", "entity_type": "world"},
+            include_failures=True,
         )
-        # Include context.formatted_context in agent system prompt
+        # Include result.formatted_context in agent system prompt
     """
 
     def __init__(
@@ -89,6 +112,227 @@ class DSFContextLearning:
         self.searcher = DecisionSearcher(self.embedder)
         self.entity_extractor = DSFEntityExtractor()
 
+    async def search(
+        self,
+        query: str,
+        actor: PydanticUser,
+        filters: Optional[Dict[str, Any]] = None,
+        min_score: float = 0.7,
+        include_failures: bool = False,
+        limit: int = 5,
+    ) -> ContextLearningResult:
+        """
+        Generic trajectory search with flexible filters.
+
+        This is the primary search method. Use this for domain-agnostic queries
+        with arbitrary filter combinations.
+
+        Args:
+            query: Natural language description of what you're looking for
+            actor: User for trajectory access
+            filters: Optional filter dictionary. Supported keys:
+                - domain (str): Filter by domain (e.g., "dsf")
+                - entity_type (str): Filter by entity type (e.g., "world", "story")
+                - entity_id (str): Filter by specific entity ID
+                - action_type (str): Filter by tool/action name
+                - tags (List[str]): Filter by tags (any match)
+            min_score: Minimum outcome score (0-1) for positive examples
+            include_failures: Whether to also retrieve failures as anti-patterns
+            limit: Maximum examples per category (successes and failures)
+
+        Returns:
+            ContextLearningResult with examples, anti_patterns, and formatted_context
+
+        Example:
+            # Find experiences about creating worlds
+            result = await learner.search(
+                query="creating world rules",
+                actor=user,
+                filters={"domain": "dsf", "entity_type": "world"},
+                include_failures=True,
+            )
+        """
+        filters = filters or {}
+
+        # Build search query with filter context
+        query_parts = [query]
+        if filters.get("domain"):
+            query_parts.append(f"domain: {filters['domain']}")
+        if filters.get("entity_type"):
+            query_parts.append(f"entity: {filters['entity_type']}")
+        if filters.get("action_type"):
+            query_parts.append(f"action: {filters['action_type']}")
+
+        search_query = " | ".join(query_parts)
+
+        # Search for successful trajectories
+        success_request = TrajectorySearchRequest(
+            query=search_query,
+            min_score=min_score,
+            domain_type=filters.get("domain"),
+            limit=limit * 3,
+        )
+
+        success_results = await self.trajectory_manager.search_trajectories_async(
+            success_request, actor
+        )
+
+        success_examples = self._extract_examples(
+            results=success_results,
+            filters=filters,
+            include_failures=False,
+            min_score=min_score,
+            limit=limit,
+        )
+
+        # Search for failures if requested
+        anti_patterns: List[RetrievedExample] = []
+        failure_count = 0
+        if include_failures:
+            failure_request = TrajectorySearchRequest(
+                query=search_query,
+                max_score=0.5,  # Low scores for failures
+                domain_type=filters.get("domain"),
+                limit=limit * 3,
+            )
+            failure_results = await self.trajectory_manager.search_trajectories_async(
+                failure_request, actor
+            )
+            failure_count = len(failure_results)
+            anti_patterns = self._extract_examples(
+                results=failure_results,
+                filters=filters,
+                include_failures=True,
+                min_score=0.0,
+                limit=limit,
+            )
+
+        # Format combined context
+        formatted_context = self._format_combined_context(success_examples, anti_patterns)
+
+        return ContextLearningResult(
+            query=search_query,
+            examples=success_examples,
+            anti_patterns=anti_patterns,
+            total_candidates=len(success_results) + failure_count,
+            filter_summary=filters,
+            formatted_context=formatted_context,
+        )
+
+    def _extract_examples(
+        self,
+        results: List[Any],
+        filters: Dict[str, Any],
+        include_failures: bool,
+        min_score: float,
+        limit: int,
+    ) -> List[RetrievedExample]:
+        """Extract and filter decision examples from search results."""
+        examples: List[RetrievedExample] = []
+
+        action_type = filters.get("action_type")
+        entity_type = filters.get("entity_type")
+        entity_id = filters.get("entity_id")
+
+        for result in results:
+            try:
+                ots_traj = self.adapter.from_letta_trajectory(result.trajectory)
+                outcome_score = result.trajectory.outcome_score
+
+                # Filter by outcome score
+                if include_failures:
+                    if outcome_score is not None and outcome_score >= 0.5:
+                        continue
+                else:
+                    if outcome_score is not None and outcome_score < min_score:
+                        continue
+
+                # Extract entity context
+                context_info = self._extract_context_info(ots_traj)
+
+                # Extract decisions from trajectory
+                for turn in ots_traj.turns:
+                    for decision in turn.decisions:
+                        # Filter by action type
+                        if action_type and decision.choice.action != action_type:
+                            continue
+
+                        # Filter by entity type/id
+                        if entity_type or entity_id:
+                            if not self._matches_entity_filter(decision, entity_type, entity_id):
+                                continue
+
+                        # Skip failed decisions for success examples
+                        if not include_failures and not decision.consequence.success:
+                            continue
+
+                        # For failure examples, prefer actual failures
+                        if include_failures and decision.consequence.success:
+                            continue
+
+                        formatted = self._format_decision_for_agent(
+                            decision, context_info, include_failures
+                        )
+
+                        examples.append(RetrievedExample(
+                            decision=decision,
+                            trajectory_id=result.trajectory.id,
+                            similarity=result.similarity,
+                            outcome_score=outcome_score,
+                            context_info=context_info,
+                            formatted_text=formatted,
+                        ))
+
+            except Exception as e:
+                logger.warning(f"Failed to process trajectory {result.trajectory.id}: {e}")
+                continue
+
+        # Sort by similarity and limit
+        examples.sort(key=lambda x: x.similarity, reverse=True)
+        return examples[:limit]
+
+    def _extract_context_info(self, ots_traj: OTSTrajectory) -> Dict[str, Any]:
+        """Extract context info from trajectory."""
+        context_info: Dict[str, Any] = {}
+
+        try:
+            entities = self.entity_extractor.extract_all(ots_traj)
+            for entity in entities:
+                if entity.type == DSFEntityExtractor.WORLD:
+                    context_info["world"] = entity.name
+                elif entity.type == DSFEntityExtractor.STORY:
+                    context_info["story"] = entity.name
+                elif entity.type == DSFEntityExtractor.RULE:
+                    context_info.setdefault("rules", []).append(entity.name)
+        except Exception as e:
+            logger.debug(f"Entity extraction failed: {e}")
+
+        return context_info
+
+    def _matches_entity_filter(
+        self,
+        decision: OTSDecision,
+        entity_type: Optional[str],
+        entity_id: Optional[str],
+    ) -> bool:
+        """Check if decision matches entity filters."""
+        if decision.choice.arguments:
+            args = decision.choice.arguments
+            if entity_type:
+                if args.get("type") == entity_type:
+                    return True
+                if args.get("entity_type") == entity_type:
+                    return True
+            if entity_id:
+                if args.get("id") == entity_id:
+                    return True
+                if args.get("entity_id") == entity_id:
+                    return True
+                if entity_type and args.get(f"{entity_type}_id") == entity_id:
+                    return True
+
+        return not (entity_type or entity_id)
+
     async def get_context_for_action(
         self,
         current_situation: str,
@@ -103,15 +347,15 @@ class DSFContextLearning:
         """
         Get context examples for an upcoming agent action.
 
-        This is the main entry point for context learning. Call this before
-        an agent takes an action to provide relevant past examples.
+        Convenience method that wraps search() with DSF-specific parameters.
+        For more flexible filtering, use search() directly with a filters dict.
 
         Args:
             current_situation: Description of the current situation
             actor: User for trajectory access
             action_type: Filter by action type (world_manager, story_manager)
-            world_checkpoint: Filter by world
-            story_id: Filter by story
+            world_checkpoint: Filter by world (DSF-specific)
+            story_id: Filter by story (DSF-specific)
             min_score: Minimum outcome score (0-1)
             max_examples: Maximum examples to return
             include_failures: Whether to include failed decisions (for anti-patterns)
@@ -119,98 +363,26 @@ class DSFContextLearning:
         Returns:
             ContextLearningResult with formatted examples
         """
-        # Build search query
+        # Build query with DSF context
         query_parts = [current_situation]
-        if action_type:
-            query_parts.append(f"action: {action_type}")
         if world_checkpoint:
             query_parts.append(f"world: {world_checkpoint}")
         if story_id:
             query_parts.append(f"story: {story_id}")
-
         query = " | ".join(query_parts)
 
-        # Search trajectories
-        search_request = TrajectorySearchRequest(
+        # Build filters
+        filters: Dict[str, Any] = {"domain": "dsf"}
+        if action_type:
+            filters["action_type"] = action_type
+
+        return await self.search(
             query=query,
-            min_score=min_score if not include_failures else None,
-            max_score=0.3 if include_failures else None,  # Low scores for failures
-            domain_type="dsf",
-            limit=max_examples * 3,  # Retrieve more, then filter
-        )
-
-        results = await self.trajectory_manager.search_trajectories_async(
-            search_request,
-            actor,
-        )
-
-        # Convert to OTS and extract decisions
-        examples: List[RetrievedExample] = []
-
-        for result in results:
-            try:
-                ots_traj = self.adapter.from_letta_trajectory(result.trajectory)
-
-                # Extract DSF entities for context
-                entities = self.entity_extractor.extract_all(ots_traj)
-                world_ctx = None
-                story_ctx = None
-                for entity in entities:
-                    if entity.type == DSFEntityExtractor.WORLD:
-                        world_ctx = entity.name
-                    if entity.type == DSFEntityExtractor.STORY:
-                        story_ctx = entity.name
-
-                # Filter decisions by action type if specified
-                for turn in ots_traj.turns:
-                    for decision in turn.decisions:
-                        if action_type and decision.choice.action != action_type:
-                            continue
-
-                        # Skip failed decisions unless explicitly requested
-                        if not include_failures and not decision.consequence.success:
-                            continue
-
-                        # Format for agent
-                        formatted = self._format_decision_for_agent(
-                            decision,
-                            world_ctx,
-                            story_ctx,
-                        )
-
-                        examples.append(RetrievedExample(
-                            decision=decision,
-                            trajectory_id=result.trajectory.id,
-                            similarity=result.similarity,
-                            outcome_score=result.trajectory.outcome_score,
-                            world_context=world_ctx,
-                            story_context=story_ctx,
-                            formatted_text=formatted,
-                        ))
-
-            except Exception as e:
-                logger.warning(f"Failed to process trajectory {result.trajectory.id}: {e}")
-                continue
-
-        # Sort by similarity and limit
-        examples.sort(key=lambda x: x.similarity, reverse=True)
-        examples = examples[:max_examples]
-
-        # Build formatted context
-        formatted_context = self._format_context(examples, include_failures)
-
-        return ContextLearningResult(
-            query=query,
-            examples=examples,
-            total_candidates=len(results),
-            filter_summary={
-                "action_type": action_type,
-                "world_checkpoint": world_checkpoint,
-                "story_id": story_id,
-                "min_score": min_score,
-                "include_failures": include_failures,
-            },
-            formatted_context=formatted_context,
+            actor=actor,
+            filters=filters,
+            min_score=min_score,
+            include_failures=include_failures,
+            limit=max_examples,
         )
 
     async def get_similar_world_decisions(
@@ -221,6 +393,8 @@ class DSFContextLearning:
         max_examples: int = 3,
     ) -> List[RetrievedExample]:
         """
+        DEPRECATED: Use search() with filters instead.
+
         Get similar world management decisions.
 
         Args:
@@ -232,16 +406,22 @@ class DSFContextLearning:
         Returns:
             List of relevant world management examples
         """
-        situation = f"Managing world {world_checkpoint} with {operation} operation"
-
-        result = await self.get_context_for_action(
-            current_situation=situation,
-            actor=actor,
-            action_type=DSFEntityExtractor.WORLD_MANAGER,
-            world_checkpoint=world_checkpoint,
-            max_examples=max_examples,
+        warnings.warn(
+            "get_similar_world_decisions is deprecated. Use search() with "
+            "filters={'entity_type': 'world', 'entity_id': world_checkpoint} instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
-
+        result = await self.search(
+            query=f"Managing world {world_checkpoint} with {operation} operation",
+            actor=actor,
+            filters={
+                "domain": "dsf",
+                "entity_type": "world",
+                "action_type": DSFEntityExtractor.WORLD_MANAGER,
+            },
+            limit=max_examples,
+        )
         return result.examples
 
     async def get_similar_story_decisions(
@@ -253,6 +433,8 @@ class DSFContextLearning:
         max_examples: int = 3,
     ) -> List[RetrievedExample]:
         """
+        DEPRECATED: Use search() with filters instead.
+
         Get similar story management decisions.
 
         Args:
@@ -265,19 +447,27 @@ class DSFContextLearning:
         Returns:
             List of relevant story management examples
         """
+        warnings.warn(
+            "get_similar_story_decisions is deprecated. Use search() with "
+            "filters={'entity_type': 'story', 'entity_id': story_id} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         situation = f"Managing story in world {world_checkpoint} with {operation} operation"
         if story_id:
             situation += f" (story: {story_id})"
 
-        result = await self.get_context_for_action(
-            current_situation=situation,
+        result = await self.search(
+            query=situation,
             actor=actor,
-            action_type=DSFEntityExtractor.STORY_MANAGER,
-            world_checkpoint=world_checkpoint,
-            story_id=story_id,
-            max_examples=max_examples,
+            filters={
+                "domain": "dsf",
+                "entity_type": "story",
+                "entity_id": story_id,
+                "action_type": DSFEntityExtractor.STORY_MANAGER,
+            },
+            limit=max_examples,
         )
-
         return result.examples
 
     async def get_rule_application_examples(
@@ -287,6 +477,8 @@ class DSFContextLearning:
         max_examples: int = 3,
     ) -> List[RetrievedExample]:
         """
+        DEPRECATED: Use search() with filters instead.
+
         Get examples of a specific rule being applied.
 
         Args:
@@ -297,10 +489,17 @@ class DSFContextLearning:
         Returns:
             List of examples where this rule was used
         """
-        result = await self.get_context_for_action(
-            current_situation=f"Applying rule {rule_id} in story",
+        warnings.warn(
+            "get_rule_application_examples is deprecated. Use search() with "
+            "filters={'entity_type': 'rule', 'entity_id': rule_id} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = await self.search(
+            query=f"Applying rule {rule_id} in story",
             actor=actor,
-            max_examples=max_examples * 2,  # Retrieve more, filter by rule
+            filters={"domain": "dsf", "entity_type": "rule", "entity_id": rule_id},
+            limit=max_examples * 2,
         )
 
         # Filter for examples that applied this rule
@@ -318,39 +517,41 @@ class DSFContextLearning:
     def _format_decision_for_agent(
         self,
         decision: OTSDecision,
-        world_context: Optional[str],
-        story_context: Optional[str],
+        context_info: Dict[str, Any],
+        is_failure: bool = False,
     ) -> str:
         """Format a decision for inclusion in agent context."""
         lines = []
 
-        # Header
-        lines.append(f"**Past Decision ({decision.decision_type.value})**")
-
-        # Context
+        # Context from context_info
+        world_context = context_info.get("world")
+        story_context = context_info.get("story")
         if world_context or story_context:
             ctx_parts = []
             if world_context:
                 ctx_parts.append(f"World: {world_context}")
             if story_context:
                 ctx_parts.append(f"Story: {story_context}")
-            lines.append(f"Context: {', '.join(ctx_parts)}")
+            lines.append(f"**Context**: {', '.join(ctx_parts)}")
 
-        # State
+        # State/Situation
         if decision.state and decision.state.context_summary:
-            lines.append(f"Situation: {decision.state.context_summary}")
+            lines.append(f"**Situation**: {decision.state.context_summary}")
 
-        # Choice
-        lines.append(f"Action: {decision.choice.action}")
+        # Choice/Action
+        lines.append(f"**Action**: {decision.choice.action}")
         if decision.choice.rationale:
-            lines.append(f"Reasoning: {decision.choice.rationale}")
+            lines.append(f"**Reasoning**: {decision.choice.rationale}")
 
         # Outcome
-        outcome = "✓ Success" if decision.consequence.success else "✗ Failed"
-        lines.append(f"Outcome: {outcome}")
-        if decision.consequence.result_summary:
-            result = decision.consequence.result_summary[:200]
-            lines.append(f"Result: {result}")
+        if is_failure:
+            lines.append(f"**Result**: {decision.consequence.result_summary[:200] if decision.consequence.result_summary else 'Failed'}")
+            if decision.consequence.error_type:
+                lines.append(f"**Error**: {decision.consequence.error_type}")
+            if decision.evaluation and decision.evaluation.feedback:
+                lines.append(f"**Lesson**: {decision.evaluation.feedback[:200]}")
+        else:
+            lines.append(f"**Result**: {decision.consequence.result_summary[:200] if decision.consequence.result_summary else 'Success'}")
 
         return "\n".join(lines)
 
@@ -359,7 +560,7 @@ class DSFContextLearning:
         examples: List[RetrievedExample],
         include_failures: bool,
     ) -> str:
-        """Format all examples into agent-ready context."""
+        """Format examples of a single type into agent-ready context."""
         if not examples:
             return ""
 
@@ -377,14 +578,99 @@ class DSFContextLearning:
         lines.append("")
 
         for i, example in enumerate(examples, 1):
-            lines.append(f"### Example {i} (similarity: {example.similarity:.2f})")
+            outcome = "✗ Failed" if include_failures else "✓ Success"
+            lines.append(f"### Example {i} (similarity: {example.similarity:.2f}, outcome: {outcome})")
             lines.append(example.formatted_text)
             lines.append("")
 
         return "\n".join(lines)
 
+    def _format_combined_context(
+        self,
+        success_examples: List[RetrievedExample],
+        anti_patterns: List[RetrievedExample],
+    ) -> str:
+        """Format both success examples and anti-patterns into agent-ready context."""
+        sections = []
+
+        # Success examples section
+        if success_examples:
+            lines = [
+                "## Relevant Past Decisions",
+                "",
+                "Consider these successful past approaches:",
+                "",
+            ]
+            for i, example in enumerate(success_examples, 1):
+                lines.append(f"### Example {i} (similarity: {example.similarity:.2f}, outcome: ✓ Success)")
+                lines.append(example.formatted_text)
+                lines.append("")
+            sections.append("\n".join(lines))
+
+        # Anti-patterns section
+        if anti_patterns:
+            lines = [
+                "## Anti-Patterns to Avoid",
+                "",
+                "The following approaches led to poor outcomes:",
+                "",
+            ]
+            for i, example in enumerate(anti_patterns, 1):
+                lines.append(f"### Example {i} (similarity: {example.similarity:.2f}, outcome: ✗ Failed)")
+                lines.append(example.formatted_text)
+                lines.append("")
+            sections.append("\n".join(lines))
+
+        return "\n".join(sections)
+
+
+# Backwards compatibility alias
+DSFContextLearning = ContextLearning
+
 
 # Convenience functions
+
+async def search_trajectories(
+    query: str,
+    actor: PydanticUser,
+    filters: Optional[Dict[str, Any]] = None,
+    include_failures: bool = False,
+    limit: int = 5,
+) -> ContextLearningResult:
+    """
+    Search trajectories for relevant past decisions.
+
+    This is the primary convenience function for context learning.
+    Returns both successful examples and optional anti-patterns.
+
+    Args:
+        query: Natural language description of what you're looking for
+        actor: User for trajectory access
+        filters: Optional filter dictionary (domain, entity_type, entity_id, action_type, tags)
+        include_failures: Whether to also retrieve failures as anti-patterns
+        limit: Maximum examples per category
+
+    Returns:
+        ContextLearningResult with examples, anti_patterns, and formatted_context
+
+    Example:
+        result = await search_trajectories(
+            query="creating world rules",
+            actor=user,
+            filters={"domain": "dsf", "entity_type": "world"},
+            include_failures=True,
+        )
+        # Include result.formatted_context in agent system prompt
+    """
+    learner = ContextLearning()
+    return await learner.search(
+        query=query,
+        actor=actor,
+        filters=filters,
+        include_failures=include_failures,
+        limit=limit,
+    )
+
 
 async def get_dsf_context(
     situation: str,
@@ -393,10 +679,9 @@ async def get_dsf_context(
     max_examples: int = 3,
 ) -> str:
     """
-    Get formatted context for a DSF agent action.
+    DEPRECATED: Use search_trajectories() instead.
 
-    This is the simplest way to add context learning to an agent.
-    Include the returned string in the agent's system prompt.
+    Get formatted context for a DSF agent action.
 
     Args:
         situation: Description of what the agent is about to do
@@ -407,7 +692,12 @@ async def get_dsf_context(
     Returns:
         Formatted context string for agent
     """
-    learner = DSFContextLearning()
+    warnings.warn(
+        "get_dsf_context is deprecated. Use search_trajectories() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    learner = ContextLearning()
     result = await learner.get_context_for_action(
         current_situation=situation,
         actor=actor,
@@ -423,9 +713,9 @@ async def get_anti_patterns(
     max_examples: int = 2,
 ) -> str:
     """
-    Get formatted anti-patterns to avoid.
+    DEPRECATED: Use search_trajectories(include_failures=True) instead.
 
-    Returns examples of past failures to warn the agent.
+    Get formatted anti-patterns to avoid.
 
     Args:
         situation: Description of what the agent is about to do
@@ -435,12 +725,16 @@ async def get_anti_patterns(
     Returns:
         Formatted anti-patterns string for agent
     """
-    learner = DSFContextLearning()
-    result = await learner.get_context_for_action(
-        current_situation=situation,
+    warnings.warn(
+        "get_anti_patterns is deprecated. Use search_trajectories(include_failures=True) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    learner = ContextLearning()
+    result = await learner.search(
+        query=situation,
         actor=actor,
-        min_score=0.0,  # We want failures
-        max_examples=max_examples,
         include_failures=True,
+        limit=max_examples,
     )
     return result.formatted_context

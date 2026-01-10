@@ -38,11 +38,13 @@ from letta.trajectories.ots.dsf_entity_extractor import (
     enrich_trajectory_context,
 )
 from letta.trajectories.ots.context_learning import (
-    DSFContextLearning,
+    ContextLearning,
+    DSFContextLearning,  # Deprecated alias
     RetrievedExample,
     ContextLearningResult,
-    get_dsf_context,
-    get_anti_patterns,
+    search_trajectories,
+    get_dsf_context,  # Deprecated
+    get_anti_patterns,  # Deprecated
 )
 from letta.trajectories.ots.observability import (
     LangfuseExporter,
@@ -81,11 +83,13 @@ __all__ = [
     "extract_dsf_entities",
     "enrich_trajectory_context",
     # Context Learning
-    "DSFContextLearning",
+    "ContextLearning",
+    "DSFContextLearning",  # Deprecated alias
     "RetrievedExample",
     "ContextLearningResult",
-    "get_dsf_context",
-    "get_anti_patterns",
+    "search_trajectories",
+    "get_dsf_context",  # Deprecated
+    "get_anti_patterns",  # Deprecated
     # Observability
     "LangfuseExporter",
     "OTelTrajectoryExporter",
