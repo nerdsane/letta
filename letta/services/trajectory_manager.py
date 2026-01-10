@@ -12,13 +12,15 @@ This manager handles:
 """
 
 import asyncio
-import hashlib
 import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, desc, func, select, text
+
+# OTS imports for anonymization
+from ots.privacy import hash_identifier as ots_hash_identifier
 
 from letta.log import get_logger
 from letta.orm.agent import Agent as AgentModel
@@ -576,9 +578,13 @@ class TrajectoryManager:
         )
 
     def _hash_identifier(self, value: str) -> str:
-        """Hash an identifier for privacy in cross-org sharing."""
-        h = hashlib.sha256(f"{ANONYMIZATION_SALT}{value}".encode()).hexdigest()[:8]
-        return f"[REDACTED:{h}]"
+        """
+        Hash an identifier for privacy in cross-org sharing.
+
+        Uses OTS hash_identifier for consistent hashing across the ecosystem.
+        """
+        h = ots_hash_identifier(value, salt=ANONYMIZATION_SALT)
+        return f"[REDACTED:{h[:8]}]"
 
     def _anonymize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """

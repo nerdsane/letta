@@ -616,3 +616,266 @@ async def get_analytics_aggregations(
             daily_counts=daily_counts,
             agent_stats=agent_stats_formatted,
         )
+
+
+# Pure OTS Analytics (no LLM enrichment required)
+
+
+class OTSAnalyticsResponse(BaseModel):
+    """Analytics computed purely from OTS trajectory data (no LLM enrichment)."""
+    decision_success_rate: dict  # action -> success rate (0-1)
+    action_frequency: dict  # action -> count
+    decision_type_breakdown: dict  # decision type -> count
+    turn_distribution: dict  # turn count -> frequency
+    error_type_frequency: dict  # error type -> count
+    trajectory_outcomes: dict  # outcome type -> count
+    total_trajectories: int
+    total_turns: int
+    total_decisions: int
+    total_messages: int
+    avg_turns_per_trajectory: float
+    avg_decisions_per_turn: float
+    overall_success_rate: float
+
+
+@router.get("/analytics/ots", response_model=OTSAnalyticsResponse)
+async def get_ots_analytics(
+    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
+    limit: int = Query(500, ge=1, le=1000, description="Maximum trajectories to analyze"),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Get pure OTS analytics (no LLM enrichment required).
+
+    These analytics are computed directly from the OTS trajectory structure:
+    - Decision success rates per action
+    - Action frequency distribution
+    - Decision type breakdown (tool_selection, parameter_choice, etc.)
+    - Error type frequency
+    - Trajectory outcome distribution
+
+    Unlike the enriched analytics, these work immediately without waiting
+    for LLM processing and don't require API calls.
+
+    Useful for:
+    - Monitoring tool call patterns
+    - Identifying error hotspots
+    - Tracking decision success rates
+    - Understanding agent behavior at the decision level
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+
+    # Import OTS analytics functions
+    from ots.analytics import get_pure_ots_analytics
+    from ots.models import (
+        OTSTrajectory,
+        OTSTurn,
+        OTSDecision,
+        OTSChoice,
+        OTSConsequence,
+        OTSMetadata,
+        OTSContext,
+        DecisionType,
+        OutcomeType,
+    )
+    from datetime import datetime, timezone
+
+    from letta.orm.trajectory import Trajectory
+    from sqlalchemy import select
+    from letta.server.db import db_registry
+
+    async with db_registry.async_session() as session:
+        # Get trajectories
+        query = select(Trajectory).where(
+            Trajectory.organization_id == actor.organization_id
+        )
+        if agent_id:
+            query = query.where(Trajectory.agent_id == agent_id)
+        query = query.limit(limit)
+
+        result = await session.execute(query)
+        trajectories_orm = result.scalars().all()
+
+        # Convert Letta trajectories to OTS format for analytics
+        ots_trajectories = []
+        for traj_orm in trajectories_orm:
+            ots_traj = _letta_to_ots_for_analytics(traj_orm)
+            ots_trajectories.append(ots_traj)
+
+        # Compute OTS analytics
+        analytics = get_pure_ots_analytics(ots_trajectories)
+
+        return OTSAnalyticsResponse(
+            decision_success_rate=analytics.decision_success_rate,
+            action_frequency=analytics.action_frequency,
+            decision_type_breakdown=analytics.decision_type_breakdown,
+            turn_distribution=analytics.turn_distribution,
+            error_type_frequency=analytics.error_type_frequency,
+            trajectory_outcomes=analytics.trajectory_outcomes,
+            total_trajectories=analytics.total_trajectories,
+            total_turns=analytics.total_turns,
+            total_decisions=analytics.total_decisions,
+            total_messages=analytics.total_messages,
+            avg_turns_per_trajectory=analytics.avg_turns_per_trajectory,
+            avg_decisions_per_turn=analytics.avg_decisions_per_turn,
+            overall_success_rate=analytics.overall_success_rate,
+        )
+
+
+def _letta_to_ots_for_analytics(trajectory_orm) -> "OTSTrajectory":
+    """
+    Convert Letta trajectory ORM to OTS format for analytics.
+
+    This is a lightweight conversion focused on extracting decisions
+    for analytics purposes.
+    """
+    from ots.models import (
+        OTSTrajectory,
+        OTSTurn,
+        OTSDecision,
+        OTSChoice,
+        OTSConsequence,
+        OTSMetadata,
+        OTSContext,
+        OTSMessage,
+        OTSMessageContent,
+        DecisionType,
+        OutcomeType,
+        MessageRole,
+        ContentType,
+    )
+    from datetime import datetime, timezone
+
+    data = trajectory_orm.data or {}
+    turns_data = data.get("turns", [])
+
+    ots_turns = []
+    for turn_idx, turn in enumerate(turns_data):
+        messages = turn.get("messages", [])
+
+        # Extract decisions from tool calls
+        ots_decisions = []
+        ots_messages = []
+
+        for msg_idx, msg in enumerate(messages):
+            # Convert messages
+            role_map = {
+                "user": MessageRole.USER,
+                "assistant": MessageRole.ASSISTANT,
+                "system": MessageRole.SYSTEM,
+                "tool": MessageRole.TOOL,
+            }
+            role = role_map.get(msg.get("role", ""), MessageRole.ASSISTANT)
+
+            ots_messages.append(
+                OTSMessage(
+                    role=role,
+                    timestamp=datetime.now(timezone.utc),
+                    content=OTSMessageContent(
+                        type=ContentType.TEXT,
+                        text=msg.get("content", ""),
+                    ),
+                )
+            )
+
+            # Extract tool calls as decisions
+            tool_calls = msg.get("tool_calls") or []
+            for tc_idx, tc in enumerate(tool_calls):
+                tool_name = tc.get("function", {}).get("name", "unknown")
+                tool_call_id = tc.get("id")
+
+                # Determine success from tool response
+                success = _extract_tool_success_for_analytics(messages, tool_call_id)
+
+                ots_decisions.append(
+                    OTSDecision(
+                        decision_id=f"{trajectory_orm.id}-{turn_idx}-{msg_idx}-{tc_idx}",
+                        decision_type=DecisionType.TOOL_SELECTION,
+                        choice=OTSChoice(
+                            action=tool_name,
+                            arguments=tc.get("function", {}).get("arguments"),
+                        ),
+                        consequence=OTSConsequence(
+                            success=success if success is not None else True,
+                            result_summary=None,
+                            error_type=_extract_error_type(messages, tool_call_id) if success is False else None,
+                        ),
+                    )
+                )
+
+        ots_turns.append(
+            OTSTurn(
+                turn_id=turn_idx,
+                timestamp=datetime.now(timezone.utc),
+                messages=ots_messages,
+                decisions=ots_decisions,
+            )
+        )
+
+    # Determine outcome from score
+    score = trajectory_orm.outcome_score
+    if score is not None:
+        if score >= 0.7:
+            outcome = OutcomeType.SUCCESS
+        elif score >= 0.4:
+            outcome = OutcomeType.PARTIAL_SUCCESS
+        else:
+            outcome = OutcomeType.FAILURE
+    else:
+        outcome = OutcomeType.SUCCESS  # Default
+
+    return OTSTrajectory(
+        trajectory_id=trajectory_orm.id,
+        metadata=OTSMetadata(
+            task_description=trajectory_orm.searchable_summary or "",
+            domain=trajectory_orm.domain_type,
+            timestamp_start=trajectory_orm.created_at or datetime.now(timezone.utc),
+            agent_id=trajectory_orm.agent_id,
+            outcome=outcome,
+            tags=trajectory_orm.tags or [],
+        ),
+        context=OTSContext(),
+        turns=ots_turns,
+        final_reward=trajectory_orm.outcome_score,
+    )
+
+
+def _extract_tool_success_for_analytics(messages, tool_call_id):
+    """Extract tool success from messages."""
+    if not tool_call_id:
+        return None
+
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call_id:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                if any(err in content.lower() for err in ["error", "failed", "exception", "traceback"]):
+                    return False
+            return True
+
+    return None
+
+
+def _extract_error_type(messages, tool_call_id):
+    """Extract error type from tool response."""
+    if not tool_call_id:
+        return None
+
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call_id:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                content_lower = content.lower()
+                if "timeout" in content_lower:
+                    return "Timeout"
+                elif "validation" in content_lower:
+                    return "ValidationError"
+                elif "permission" in content_lower or "auth" in content_lower:
+                    return "PermissionError"
+                elif "not found" in content_lower:
+                    return "NotFoundError"
+                elif "error" in content_lower or "exception" in content_lower:
+                    return "Error"
+
+    return None
