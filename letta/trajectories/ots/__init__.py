@@ -7,6 +7,8 @@ This module provides:
 - Adapter to convert Letta trajectories to OTS
 - Decision extractor for extracting decisions from turns
 - Storage layer for OTS trajectories and annotations
+- DSF-specific entity extraction
+- Context learning retrieval for agent improvement
 """
 
 from letta.trajectories.ots.models import (
@@ -27,6 +29,19 @@ from letta.trajectories.ots.decision_embeddings import (
     DecisionSearcher,
     embed_decision,
     find_similar_decisions,
+)
+from letta.trajectories.ots.dsf_entity_extractor import (
+    DSFEntityExtractor,
+    DSFEvaluationIntegrator,
+    extract_dsf_entities,
+    enrich_trajectory_context,
+)
+from letta.trajectories.ots.context_learning import (
+    DSFContextLearning,
+    RetrievedExample,
+    ContextLearningResult,
+    get_dsf_context,
+    get_anti_patterns,
 )
 
 __all__ = [
@@ -52,4 +67,15 @@ __all__ = [
     "DecisionSearcher",
     "embed_decision",
     "find_similar_decisions",
+    # DSF Integration
+    "DSFEntityExtractor",
+    "DSFEvaluationIntegrator",
+    "extract_dsf_entities",
+    "enrich_trajectory_context",
+    # Context Learning
+    "DSFContextLearning",
+    "RetrievedExample",
+    "ContextLearningResult",
+    "get_dsf_context",
+    "get_anti_patterns",
 ]
