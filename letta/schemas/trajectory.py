@@ -213,3 +213,34 @@ class TrajectoryShareUpdate(LettaBase):
     share_cross_org: bool = Field(..., description="Whether to enable cross-org sharing (anonymized)")
 
     model_config = ConfigDict(extra="forbid")
+
+
+class DecisionSummary(LettaBase):
+    """
+    Summary of a decision (tool call) extracted from trajectory data.
+    Used for UI display of decision-level details.
+    """
+
+    decision_id: str = Field(..., description="Unique identifier for this decision")
+    turn_index: int = Field(..., description="Which turn this decision occurred in")
+    decision_type: str = Field(..., description="Type: tool_selection, parameter_choice, etc.")
+    action: str = Field(..., description="The action taken (tool name or choice)")
+    arguments: Optional[Dict[str, Any]] = Field(None, description="Arguments passed to the action")
+    rationale: Optional[str] = Field(None, description="Reasoning behind this decision (if available)")
+    success: bool = Field(True, description="Whether this decision succeeded")
+    error_type: Optional[str] = Field(None, description="Type of error if failed")
+    result_summary: Optional[str] = Field(None, description="Brief summary of the result")
+
+
+class TrajectoryWithDecisions(Trajectory):
+    """
+    Trajectory with extracted OTS-style decisions for UI display.
+
+    Includes all standard trajectory fields plus a decisions list
+    that breaks down individual tool calls with success/failure status.
+    """
+
+    decisions: List[DecisionSummary] = Field(
+        default_factory=list,
+        description="List of decisions (tool calls) extracted from trajectory"
+    )

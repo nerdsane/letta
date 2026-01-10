@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from letta.log import get_logger
 from letta.schemas.trajectory import (
+    DecisionSummary,
     Trajectory,
     TrajectoryCreate,
     TrajectorySearchRequest,
@@ -21,6 +22,7 @@ from letta.schemas.trajectory import (
     TrajectoryShareUpdate,
     TrajectoryUpdate,
     TrajectoryVisibility,
+    TrajectoryWithDecisions,
 )
 from pydantic import BaseModel
 from letta.server.rest_api.dependencies import HeaderParams, get_headers, get_letta_server
@@ -106,24 +108,6 @@ async def get_queue_status(
     # No actor needed - queue status is server-level
     queue_status = server.trajectory_manager.get_queue_status()
     return queue_status
-
-
-@router.get("/{trajectory_id}", response_model=Trajectory)
-async def get_trajectory(
-    trajectory_id: str,
-    server: SyncServer = Depends(get_letta_server),
-    headers: HeaderParams = Depends(get_headers),
-):
-    """
-    Get a single trajectory by ID.
-    """
-    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
-    trajectory = await server.trajectory_manager.get_trajectory_async(trajectory_id=trajectory_id, actor=actor)
-
-    if not trajectory:
-        raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
-
-    return trajectory
 
 
 @router.get("/", response_model=List[Trajectory])
@@ -879,3 +863,121 @@ def _extract_error_type(messages, tool_call_id):
                     return "Error"
 
     return None
+
+
+def _extract_decisions_from_trajectory(trajectory: Trajectory) -> List[DecisionSummary]:
+    """
+    Extract OTS-style decisions from trajectory data.
+
+    Analyzes tool calls in each turn and determines success/failure
+    based on subsequent tool response messages.
+    """
+    decisions = []
+    data = trajectory.data or {}
+    turns = data.get("turns", [])
+
+    for turn_idx, turn in enumerate(turns):
+        messages = turn.get("messages", [])
+
+        for msg_idx, msg in enumerate(messages):
+            tool_calls = msg.get("tool_calls") or []
+
+            for tc_idx, tc in enumerate(tool_calls):
+                tool_name = tc.get("function", {}).get("name", "unknown")
+                tool_call_id = tc.get("id")
+                arguments = tc.get("function", {}).get("arguments")
+
+                # Parse arguments if it's a string
+                if isinstance(arguments, str):
+                    try:
+                        import json
+                        arguments = json.loads(arguments)
+                    except (json.JSONDecodeError, TypeError):
+                        arguments = {"raw": arguments}
+
+                # Determine success from tool response
+                success = _extract_tool_success_for_analytics(messages, tool_call_id)
+                if success is None:
+                    success = True  # Default to success if no response found
+
+                error_type = None
+                result_summary = None
+
+                if not success:
+                    error_type = _extract_error_type(messages, tool_call_id)
+
+                # Try to extract result summary from tool response
+                for response_msg in messages:
+                    if response_msg.get("role") == "tool" and response_msg.get("tool_call_id") == tool_call_id:
+                        content = response_msg.get("content", "")
+                        if isinstance(content, str) and len(content) > 0:
+                            # Truncate long results
+                            result_summary = content[:200] + "..." if len(content) > 200 else content
+                        break
+
+                decisions.append(DecisionSummary(
+                    decision_id=f"{trajectory.id}-{turn_idx}-{msg_idx}-{tc_idx}",
+                    turn_index=turn_idx,
+                    decision_type="tool_selection",
+                    action=tool_name,
+                    arguments=arguments,
+                    rationale=None,  # Could be extracted from assistant message content
+                    success=success,
+                    error_type=error_type,
+                    result_summary=result_summary,
+                ))
+
+    return decisions
+
+
+# IMPORTANT: This route must be at the END of the file because it's a catch-all
+# that matches any string as trajectory_id. If placed earlier, it shadows
+# specific routes like /analytics/ots, /analytics/embeddings, etc.
+@router.get("/{trajectory_id}", response_model=TrajectoryWithDecisions)
+async def get_trajectory(
+    trajectory_id: str,
+    include_decisions: bool = Query(True, description="Include extracted OTS-style decisions"),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Get a single trajectory by ID with optional decision extraction.
+
+    When include_decisions=True (default), extracts tool calls as OTS-style
+    decisions with success/failure status, enabling detailed analysis of
+    agent behavior at the decision level.
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.get_trajectory_async(trajectory_id=trajectory_id, actor=actor)
+
+    if not trajectory:
+        raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
+
+    # Extract decisions if requested
+    decisions = []
+    if include_decisions:
+        decisions = _extract_decisions_from_trajectory(trajectory)
+
+    # Return trajectory with decisions
+    return TrajectoryWithDecisions(
+        id=trajectory.id,
+        agent_id=trajectory.agent_id,
+        domain_type=trajectory.domain_type,
+        share_cross_org=trajectory.share_cross_org,
+        data=trajectory.data,
+        searchable_summary=trajectory.searchable_summary,
+        outcome_score=trajectory.outcome_score,
+        score_reasoning=trajectory.score_reasoning,
+        tags=trajectory.tags,
+        task_category=trajectory.task_category,
+        complexity_level=trajectory.complexity_level,
+        trajectory_metadata=trajectory.trajectory_metadata,
+        processing_status=trajectory.processing_status,
+        processing_started_at=trajectory.processing_started_at,
+        processing_completed_at=trajectory.processing_completed_at,
+        processing_error=trajectory.processing_error,
+        created_at=trajectory.created_at,
+        updated_at=trajectory.updated_at,
+        organization_id=trajectory.organization_id,
+        decisions=decisions,
+    )
