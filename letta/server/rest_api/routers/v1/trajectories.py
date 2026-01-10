@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from letta.log import get_logger
 from letta.schemas.trajectory import (
     Trajectory,
     TrajectoryCreate,
@@ -25,7 +26,26 @@ from pydantic import BaseModel
 from letta.server.rest_api.dependencies import HeaderParams, get_headers, get_letta_server
 from letta.server.server import SyncServer
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/trajectories", tags=["trajectories"])
+
+
+# Langfuse export models
+
+
+class LangfuseExportRequest(BaseModel):
+    """Request body for Langfuse export"""
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class LangfuseExportResponse(BaseModel):
+    """Response from Langfuse export"""
+    success: bool
+    langfuse_trace_id: str
+    message: Optional[str] = None
 
 
 @router.post("/", response_model=Trajectory, status_code=201)
@@ -299,6 +319,78 @@ async def process_trajectory(
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
 
     return trajectory
+
+
+@router.post("/{trajectory_id}/export/langfuse", response_model=LangfuseExportResponse)
+async def export_trajectory_to_langfuse(
+    trajectory_id: str,
+    export_request: LangfuseExportRequest = Body(default=LangfuseExportRequest()),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Export a trajectory to Langfuse for visualization.
+
+    This converts the Letta trajectory to OTS format and sends it to Langfuse,
+    where you can visualize:
+    - Trace timeline showing turn progression
+    - LLM generations for each turn
+    - Tool call spans with inputs/outputs
+    - Quality scores and metadata
+
+    Requires Langfuse environment variables:
+    - LANGFUSE_PUBLIC_KEY
+    - LANGFUSE_SECRET_KEY
+
+    The export is one-way (OTS -> Langfuse) and preserves:
+    - Turn structure and messages
+    - Decision details (tool calls, arguments)
+    - Quality scores and tags
+    - Timing information
+
+    Note: Decision alternatives and credit assignment (OTS-specific features)
+    are included in span metadata but may not be fully visualized in Langfuse.
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.get_trajectory_async(trajectory_id=trajectory_id, actor=actor)
+
+    if not trajectory:
+        raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
+
+    try:
+        # Convert to OTS format
+        from letta.trajectories.ots import OTSAdapter, LangfuseExporter
+
+        adapter = OTSAdapter()
+        ots_trajectory = adapter.from_letta_trajectory(trajectory, extract_decisions=True)
+
+        # Export to Langfuse
+        exporter = LangfuseExporter()
+        trace_id = await exporter.export_trajectory(
+            trajectory=ots_trajectory,
+            user_id=export_request.user_id,
+            session_id=export_request.session_id,
+            tags=export_request.tags,
+        )
+
+        return LangfuseExportResponse(
+            success=True,
+            langfuse_trace_id=trace_id,
+            message=f"Trajectory exported to Langfuse. View at https://cloud.langfuse.com/trace/{trace_id}",
+        )
+
+    except ImportError as e:
+        logger.error(f"Langfuse import failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Langfuse package not installed. Install with: pip install langfuse",
+        )
+    except Exception as e:
+        logger.error(f"Langfuse export failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export trajectory to Langfuse: {str(e)}",
+        )
 
 
 # Analytics endpoints

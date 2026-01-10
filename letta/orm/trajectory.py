@@ -140,7 +140,13 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
         back_populates="trajectory",
         cascade="all, delete-orphan"
     )
+    decisions: Mapped[list["TrajectoryDecision"]] = relationship(
+        "TrajectoryDecision",
+        back_populates="trajectory",
+        cascade="all, delete-orphan"
+    )
 
 
 if TYPE_CHECKING:
     from letta.orm.trajectory_annotation import TrajectoryAnnotation
+    from letta.orm.trajectory_decision import TrajectoryDecision
