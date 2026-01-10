@@ -9,6 +9,7 @@ This module provides:
 - Storage layer for OTS trajectories and annotations
 - DSF-specific entity extraction
 - Context learning retrieval for agent improvement
+- Observability exporters (Langfuse, OTel)
 """
 
 from letta.trajectories.ots.models import (
@@ -42,6 +43,13 @@ from letta.trajectories.ots.context_learning import (
     ContextLearningResult,
     get_dsf_context,
     get_anti_patterns,
+)
+from letta.trajectories.ots.observability import (
+    LangfuseExporter,
+    OTelTrajectoryExporter,
+    export_to_langfuse,
+    export_to_otel,
+    link_trajectory_to_current_span,
 )
 
 __all__ = [
@@ -78,4 +86,10 @@ __all__ = [
     "ContextLearningResult",
     "get_dsf_context",
     "get_anti_patterns",
+    # Observability
+    "LangfuseExporter",
+    "OTelTrajectoryExporter",
+    "export_to_langfuse",
+    "export_to_otel",
+    "link_trajectory_to_current_span",
 ]
