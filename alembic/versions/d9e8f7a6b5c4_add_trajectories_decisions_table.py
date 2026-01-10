@@ -68,9 +68,9 @@ def upgrade() -> None:
     if is_postgres:
         # Use pgvector for PostgreSQL
         op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        op.add_column(
-            "trajectories_decisions",
-            sa.Column("embedding", postgresql.ARRAY(sa.Float()), nullable=True),
+        # Use VECTOR type for pgvector compatibility (required for ivfflat index)
+        op.execute(
+            "ALTER TABLE trajectories_decisions ADD COLUMN embedding VECTOR(1536)"
         )
     else:
         # Use JSON for SQLite
