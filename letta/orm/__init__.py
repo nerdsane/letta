@@ -37,4 +37,5 @@ from letta.orm.step_metrics import StepMetrics
 from letta.orm.tool import Tool
 from letta.orm.tools_agents import ToolsAgents
 from letta.orm.trajectory import Trajectory
+from letta.orm.trajectory_annotation import TrajectoryAnnotation
 from letta.orm.user import User
