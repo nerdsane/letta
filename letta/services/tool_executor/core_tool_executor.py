@@ -46,6 +46,7 @@ class LettaCoreToolExecutor(ToolExecutor):
             "archival_memory_search": self.archival_memory_search,
             "archival_memory_insert": self.archival_memory_insert,
             "search_trajectories": self.search_trajectories,
+            "search_decisions": self.search_decisions,
             "core_memory_append": self.core_memory_append,
             "core_memory_replace": self.core_memory_replace,
             "memory_replace": self.memory_replace,
@@ -501,6 +502,87 @@ class LettaCoreToolExecutor(ToolExecutor):
             logger = get_logger(__name__)
             logger.error(f"Error searching trajectories: {e}")
             return f"Unable to search past experiences: {str(e)}"
+
+    async def search_decisions(
+        self,
+        agent_state: AgentState,
+        actor: User,
+        query: str,
+        action: Optional[str] = None,
+        success_only: Optional[bool] = None,
+        limit: int = 5,
+    ) -> Optional[str]:
+        """Search for specific decisions (tool calls) in past execution history."""
+        try:
+            from letta.schemas.trajectory_decision import TrajectoryDecisionSearchRequest
+            from letta.server.rest_api.app import server
+
+            # Ensure limit is reasonable
+            limit = min(limit, 20)  # Cap at 20 results
+
+            # Build search request
+            search_request = TrajectoryDecisionSearchRequest(
+                query=query,
+                action=action,
+                success=success_only,
+                limit=limit,
+                min_similarity=0.3,  # Lower threshold for decisions
+            )
+
+            # Search using decision manager
+            response = await server.decision_manager.search_decisions_async(
+                request=search_request,
+                actor=actor,
+            )
+
+            if not response.results or len(response.results) == 0:
+                return "No matching decisions found for this query."
+
+            # Format results for the agent
+            formatted_results = []
+            for result in response.results:
+                decision = result.decision
+                similarity = result.similarity
+
+                result_dict = {
+                    "similarity": f"{similarity:.2f}",
+                    "action": decision.action,
+                    "success": decision.success,
+                    "turn_index": decision.turn_index,
+                }
+
+                # Add decision type if available
+                if decision.decision_type:
+                    result_dict["decision_type"] = decision.decision_type
+
+                # Add rationale if available
+                if decision.rationale:
+                    result_dict["rationale"] = decision.rationale
+
+                # Add error info for failures
+                if not decision.success and decision.error_type:
+                    result_dict["error_type"] = decision.error_type
+
+                # Add result summary if available
+                if decision.result_summary:
+                    # Truncate long summaries
+                    summary = decision.result_summary
+                    if len(summary) > 200:
+                        summary = summary[:200] + "..."
+                    result_dict["result_summary"] = summary
+
+                formatted_results.append(result_dict)
+
+            return {
+                "message": f"Found {len(response.results)} matching decisions:",
+                "results": formatted_results,
+            }
+
+        except Exception as e:
+            from letta.log import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Error searching decisions: {e}")
+            return f"Unable to search decisions: {str(e)}"
 
     async def core_memory_append(self, agent_state: AgentState, actor: User, label: str, content: str) -> Optional[str]:
         if agent_state.memory.get_block(label).read_only:

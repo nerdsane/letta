@@ -630,3 +630,61 @@ async def search_trajectories(
     raise NotImplementedError("This should never be invoked directly. Contact Letta if you see this error message.")
 
 
+async def search_decisions(
+    self: "Agent",
+    query: str,
+    action: Optional[str] = None,
+    success_only: Optional[bool] = None,
+    limit: int = 5,
+) -> Optional[str]:
+    """
+    Search for specific decisions (tool calls) in past execution history.
+
+    While search_trajectories finds complete execution sessions, search_decisions
+    drills down to individual tool calls and their outcomes. Use this to find
+    specific patterns in your decision-making at a granular level:
+    - "How did I use world_manager save?" - find all world_manager save calls
+    - "When did image generation fail?" - find failed image_generator calls
+    - "What arguments worked for story_manager?" - find successful story_manager calls
+
+    Decision-level search is more precise than trajectory search when you need:
+    - Specific tool call patterns and their outcomes
+    - Error analysis for a particular action
+    - Parameter patterns that led to success vs failure
+    - Micro-level learning from individual decisions
+
+    Args:
+        query: Describe what decision pattern you want to learn from (e.g., "saving worlds with complex nested elements", "image generation for space scenes")
+        action: Filter to a specific tool/action name (e.g., "world_manager", "image_generator"). If None, searches all actions.
+        success_only: Filter by outcome - True for successes only, False for failures only, None for all.
+        limit: Maximum number of decisions to return (default: 5, max: 20).
+
+    Returns:
+        A list of matching decisions with action name, arguments, success/failure status, and error types if failed.
+
+    Examples:
+        # Find successful world_manager operations
+        search_decisions(
+            query="world building operations",
+            action="world_manager",
+            success_only=True,
+            limit=5
+        )
+
+        # Find failed image generations to learn from errors
+        search_decisions(
+            query="image generation attempts",
+            action="image_generator",
+            success_only=False,
+            limit=10
+        )
+
+        # Find any decisions related to handling user preferences
+        search_decisions(
+            query="user preference handling",
+            limit=10
+        )
+    """
+    raise NotImplementedError("This should never be invoked directly. Contact Letta if you see this error message.")
+
+
