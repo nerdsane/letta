@@ -17,13 +17,15 @@ and will be removed in a future version. Use `search()` with appropriate filters
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from letta.log import get_logger
 from letta.schemas.trajectory import TrajectorySearchRequest
 from letta.schemas.user import User as PydanticUser
-from letta.services.trajectory_manager import TrajectoryManager
 from letta.trajectories.ots.adapter import OTSAdapter
+
+if TYPE_CHECKING:
+    from letta.services.trajectory_manager import TrajectoryManager
 from letta.trajectories.ots.decision_embeddings import DecisionEmbedder, DecisionSearcher
 from letta.trajectories.ots.dsf_entity_extractor import DSFEntityExtractor
 from letta.trajectories.ots.models import OTSDecision, OTSTrajectory
@@ -94,7 +96,7 @@ class ContextLearning:
 
     def __init__(
         self,
-        trajectory_manager: Optional[TrajectoryManager] = None,
+        trajectory_manager: Optional["TrajectoryManager"] = None,
         adapter: Optional[OTSAdapter] = None,
         embedder: Optional[DecisionEmbedder] = None,
     ):
@@ -106,6 +108,9 @@ class ContextLearning:
             adapter: OTS adapter for conversion
             embedder: Decision embedder for similarity
         """
+        # Lazy import to avoid circular dependency
+        from letta.services.trajectory_manager import TrajectoryManager
+
         self.trajectory_manager = trajectory_manager or TrajectoryManager()
         self.adapter = adapter or OTSAdapter()
         self.embedder = embedder or DecisionEmbedder()

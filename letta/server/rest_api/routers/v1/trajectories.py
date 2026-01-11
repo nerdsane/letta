@@ -8,7 +8,7 @@ Supports cross-organization sharing with privacy-preserving anonymization.
 """
 
 import json
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 

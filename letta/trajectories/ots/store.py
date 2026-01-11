@@ -6,9 +6,12 @@ enabling storage, retrieval, and semantic search of decision traces.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from letta.log import get_logger
+
+if TYPE_CHECKING:
+    from letta.services.trajectory_manager import TrajectoryManager
 from letta.schemas.trajectory import Trajectory as LettaTrajectory, TrajectoryCreate
 from letta.schemas.trajectory_annotation import (
     EvaluatorType,
@@ -17,7 +20,6 @@ from letta.schemas.trajectory_annotation import (
 )
 from letta.schemas.user import User as PydanticUser
 from letta.services.annotation_manager import AnnotationManager
-from letta.services.trajectory_manager import TrajectoryManager
 from letta.trajectories.ots.adapter import OTSAdapter
 from letta.trajectories.ots.decision_extractor import DecisionExtractor
 from letta.trajectories.ots.models import (
@@ -48,7 +50,7 @@ class OTSStore:
 
     def __init__(
         self,
-        trajectory_manager: Optional[TrajectoryManager] = None,
+        trajectory_manager: Optional["TrajectoryManager"] = None,
         annotation_manager: Optional[AnnotationManager] = None,
     ):
         """
@@ -58,6 +60,9 @@ class OTSStore:
             trajectory_manager: Trajectory manager instance (creates new if None)
             annotation_manager: Annotation manager instance (creates new if None)
         """
+        # Lazy import to avoid circular dependency
+        from letta.services.trajectory_manager import TrajectoryManager
+
         self.trajectory_manager = trajectory_manager or TrajectoryManager()
         self.annotation_manager = annotation_manager or AnnotationManager()
         self.adapter = OTSAdapter()

@@ -29,9 +29,8 @@ class OpenAILLMClient:
     """
 
     # Default model for OTS extraction
-    # GPT-5 mini: $0.25/1M input, $2.00/1M output, 400k context
-    # Better reasoning than 4o-mini, good for decision extraction
-    DEFAULT_MODEL = "gpt-5-mini"
+    # GPT-4o mini: Fast, cost-effective, good for extraction
+    DEFAULT_MODEL = "gpt-4o-mini"
 
     def __init__(
         self,

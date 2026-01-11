@@ -335,7 +335,7 @@ class TrajectoryManager:
         2. Score the trajectory (0-1, with reasoning) (gpt-4o-mini)
         3. Extract labels and metadata (tags, category, complexity, patterns) (gpt-4o-mini)
         4. Generate embedding from summary (text-embedding-3-small)
-        5. Extract OTS decisions and entities (GPT-5 mini)
+        5. Extract OTS decisions and entities (gpt-4o-mini)
         """
         async with db_registry.async_session() as session:
             async with session.begin():
@@ -349,7 +349,7 @@ class TrajectoryManager:
                 if not trajectory_orm:
                     return None
 
-                # Process with LLM (includes OTS extraction with GPT-5 mini)
+                # Process with LLM (includes OTS extraction with gpt-4o-mini)
                 (
                     summary,
                     score,
