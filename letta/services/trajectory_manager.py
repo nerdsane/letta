@@ -582,6 +582,8 @@ class TrajectoryManager:
             task_category=trajectory_orm.task_category,
             complexity_level=trajectory_orm.complexity_level,
             trajectory_metadata=trajectory_orm.trajectory_metadata,
+            ots_decisions=trajectory_orm.ots_decisions,
+            ots_entities=trajectory_orm.ots_entities,
             processing_status=trajectory_orm.processing_status,
             processing_started_at=trajectory_orm.processing_started_at,
             processing_completed_at=trajectory_orm.processing_completed_at,

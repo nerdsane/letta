@@ -523,9 +523,9 @@ class DecisionExtractor:
         for e in entity_dicts:
             try:
                 entity = OTSEntity(
-                    entity_type=e.get("type", "concept"),
-                    entity_id=e.get("id", ""),
-                    name=e.get("name", ""),
+                    type=e.get("type", "concept"),
+                    id=e.get("id", ""),
+                    name=e.get("name"),
                     metadata=e.get("metadata", {}),
                 )
                 entities.append(entity)

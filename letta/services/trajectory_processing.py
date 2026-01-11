@@ -349,7 +349,8 @@ Be specific and descriptive. These labels will be used for filtering, pattern de
             seen_ids = set()
             unique_entities = []
             for e in all_entities:
-                entity_id = e.get("entity_id") or e.get("id", "")
+                # OTSEntity uses 'id', not 'entity_id'
+                entity_id = e.get("id", "")
                 if entity_id and entity_id not in seen_ids:
                     unique_entities.append(e)
                     seen_ids.add(entity_id)
@@ -404,14 +405,16 @@ Be specific and descriptive. These labels will be used for filtering, pattern de
             if hasattr(entity, "model_dump"):
                 return entity.model_dump()
             elif hasattr(entity, "__dict__"):
+                # OTSEntity uses 'type' and 'id' as field names
                 return {
-                    "entity_type": entity.entity_type,
-                    "entity_id": entity.entity_id,
+                    "type": entity.type,
+                    "id": entity.id,
                     "name": entity.name,
                     "metadata": entity.metadata,
                 }
             return {}
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to convert entity to dict: {e}")
             return {}
 
     async def process_trajectory(

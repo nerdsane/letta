@@ -181,6 +181,83 @@ async def delete_trajectory(
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
 
 
+@router.post("/{trajectory_id}/reprocess", response_model=Trajectory)
+async def reprocess_trajectory(
+    trajectory_id: str,
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Reprocess a trajectory with LLM to regenerate all enriched data.
+
+    This includes:
+    - Searchable summary (gpt-4o-mini)
+    - Outcome score with reasoning (gpt-4o-mini)
+    - Tags, task category, complexity level (gpt-4o-mini)
+    - Embedding (text-embedding-3-small)
+    - OTS decisions with rationale, alternatives, confidence (gpt-4o-mini)
+    - OTS entities: services, files, users, concepts (gpt-4o-mini + programmatic)
+
+    Use this to:
+    - Backfill OTS decisions/entities on existing trajectories
+    - Regenerate data after model improvements
+    - Fix trajectories that failed initial processing
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+    trajectory = await server.trajectory_manager.process_trajectory_async(
+        trajectory_id=trajectory_id,
+        actor=actor,
+    )
+
+    if not trajectory:
+        raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
+
+    return trajectory
+
+
+@router.post("/reprocess-batch")
+async def reprocess_trajectories_batch(
+    trajectory_ids: List[str] = Body(..., embed=True),
+    server: SyncServer = Depends(get_letta_server),
+    headers: HeaderParams = Depends(get_headers),
+):
+    """
+    Reprocess multiple trajectories in batch.
+
+    Returns a summary of successes and failures. Processing happens sequentially
+    to avoid overwhelming the LLM API.
+
+    Example request body:
+    {
+        "trajectory_ids": ["trajectory-abc123", "trajectory-def456"]
+    }
+    """
+    actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
+
+    results = {"processed": [], "failed": [], "not_found": []}
+
+    for tid in trajectory_ids:
+        try:
+            trajectory = await server.trajectory_manager.process_trajectory_async(
+                trajectory_id=tid,
+                actor=actor,
+            )
+            if trajectory:
+                results["processed"].append(tid)
+            else:
+                results["not_found"].append(tid)
+        except Exception as e:
+            results["failed"].append({"id": tid, "error": str(e)})
+
+    return {
+        "total": len(trajectory_ids),
+        "processed": len(results["processed"]),
+        "failed": len(results["failed"]),
+        "not_found": len(results["not_found"]),
+        "details": results,
+    }
+
+
 @router.post("/search", response_model=TrajectorySearchResponse)
 async def search_trajectories(
     search_request: TrajectorySearchRequest = Body(...),
