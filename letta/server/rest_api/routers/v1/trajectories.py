@@ -7,6 +7,7 @@ and making that experience searchable and learnable.
 Supports cross-organization sharing with privacy-preserving anonymization.
 """
 
+import json
 from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -752,13 +753,27 @@ def _letta_to_ots_for_analytics(trajectory_orm) -> "OTSTrajectory":
             }
             role = role_map.get(msg.get("role", ""), MessageRole.ASSISTANT)
 
+            # Handle content that can be string or list of content blocks
+            raw_content = msg.get("content", "")
+            if isinstance(raw_content, list):
+                # Extract text from content blocks (e.g., reasoning blocks)
+                text_parts = []
+                for block in raw_content:
+                    if isinstance(block, dict):
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                text_content = "\n".join(text_parts)
+            else:
+                text_content = raw_content if isinstance(raw_content, str) else ""
+
             ots_messages.append(
                 OTSMessage(
                     role=role,
                     timestamp=datetime.now(timezone.utc),
                     content=OTSMessageContent(
                         type=ContentType.TEXT,
-                        text=msg.get("content", ""),
+                        text=text_content,
                     ),
                 )
             )
@@ -772,13 +787,25 @@ def _letta_to_ots_for_analytics(trajectory_orm) -> "OTSTrajectory":
                 # Determine success from tool response
                 success = _extract_tool_success_for_analytics(messages, tool_call_id)
 
+                # Parse arguments - can be dict or JSON string
+                raw_args = tc.get("function", {}).get("arguments")
+                if isinstance(raw_args, str):
+                    try:
+                        parsed_args = json.loads(raw_args)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed_args = {"raw": raw_args}
+                elif isinstance(raw_args, dict):
+                    parsed_args = raw_args
+                else:
+                    parsed_args = {}
+
                 ots_decisions.append(
                     OTSDecision(
                         decision_id=f"{trajectory_orm.id}-{turn_idx}-{msg_idx}-{tc_idx}",
                         decision_type=DecisionType.TOOL_SELECTION,
                         choice=OTSChoice(
                             action=tool_name,
-                            arguments=tc.get("function", {}).get("arguments"),
+                            arguments=parsed_args,
                         ),
                         consequence=OTSConsequence(
                             success=success if success is not None else True,
