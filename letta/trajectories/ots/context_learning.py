@@ -236,7 +236,10 @@ class ContextLearning:
 
         for result in results:
             try:
-                ots_traj = self.adapter.from_letta_trajectory(result.trajectory)
+                ots_traj = OTSAdapter.from_letta_run(
+                    result.trajectory.data,
+                    agent_id=result.trajectory.agent_id,
+                )
                 outcome_score = result.trajectory.outcome_score
 
                 # Filter by outcome score

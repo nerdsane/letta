@@ -131,8 +131,11 @@ class OTSStore:
         if not letta_trajectory:
             return None
 
-        # Convert to OTS format
-        ots_trajectory = self.adapter.from_letta_trajectory(letta_trajectory)
+        # Convert run data to OTS format
+        ots_trajectory = OTSAdapter.from_letta_run(
+            letta_trajectory.data,
+            agent_id=letta_trajectory.agent_id,
+        )
 
         # Enrich with annotations if requested
         if include_annotations:
@@ -287,8 +290,11 @@ class OTSStore:
         # Extract decisions from matching trajectories
         decisions = []
         for result in results:
-            # Convert to OTS and get decisions
-            ots_traj = self.adapter.from_letta_trajectory(result.trajectory)
+            # Convert run data to OTS and get decisions
+            ots_traj = OTSAdapter.from_letta_run(
+                result.trajectory.data,
+                agent_id=result.trajectory.agent_id,
+            )
             for turn in ots_traj.turns:
                 for decision in turn.decisions:
                     decisions.append((decision, result.similarity))
@@ -322,8 +328,9 @@ class OTSStore:
             raise ValueError(f"Trajectory {trajectory_id} not found")
 
         # Convert and extract decisions
-        ots_trajectory = self.adapter.from_letta_trajectory(
-            letta_trajectory,
+        ots_trajectory = OTSAdapter.from_letta_run(
+            letta_trajectory.data,
+            agent_id=letta_trajectory.agent_id,
             extract_decisions=True,
         )
 

@@ -344,11 +344,14 @@ async def export_trajectory_to_langfuse(
         raise HTTPException(status_code=404, detail=f"Trajectory {trajectory_id} not found")
 
     try:
-        # Convert to OTS format
+        # Convert run data to OTS format
         from letta.trajectories.ots import OTSAdapter, LangfuseExporter
 
-        adapter = OTSAdapter()
-        ots_trajectory = adapter.from_letta_trajectory(trajectory, extract_decisions=True)
+        ots_trajectory = OTSAdapter.from_letta_run(
+            trajectory.data,
+            agent_id=trajectory.agent_id,
+            extract_decisions=True,
+        )
 
         # Export to Langfuse
         exporter = LangfuseExporter()

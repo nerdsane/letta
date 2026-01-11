@@ -315,8 +315,8 @@ Be specific and descriptive. These labels will be used for filtering, pattern de
             (decisions, entities) as lists of dicts
         """
         try:
-            # Convert to OTS trajectory format
-            ots_trajectory = OTSAdapter.from_letta_trajectory(trajectory_data)
+            # Convert run data to OTS format
+            ots_trajectory = OTSAdapter.from_letta_run(trajectory_data)
 
             # Create extractor with optional LLM client
             llm_client = OpenAILLMClient() if use_llm else None

@@ -1,8 +1,24 @@
 """
-Adapter to convert Letta trajectories to Open Trajectory Specification (OTS) format.
+Adapter to convert Letta runs to Open Trajectory Specification (OTS) format.
 
-This adapter bridges Letta's internal trajectory representation to the
-portable OTS format for continual learning.
+Letta runs are the native execution traces. This adapter converts them directly
+to OTS format for continual learning - no intermediate "trajectory" needed.
+
+Run format (native Letta):
+{
+  "run_id": "run-...",
+  "metadata": { start_time, end_time, duration_ns, status, tokens, models },
+  "turns": [{ step_id, model, messages }],
+  "outcome": { execution, type, confidence }
+}
+
+OTS format (output):
+{
+  "trajectory_id": "...",
+  "metadata": { task_description, agent_id, outcome, ... },
+  "turns": [{ turn_id, messages, decisions, ... }],
+  "final_reward": 0.0-1.0
+}
 """
 
 from datetime import datetime
@@ -10,7 +26,6 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from letta.log import get_logger
-from letta.schemas.trajectory import Trajectory as LettaTrajectory
 from letta.trajectories.ots.models import (
     ContentType,
     DecisionType,
@@ -19,7 +34,6 @@ from letta.trajectories.ots.models import (
     OTSChoice,
     OTSConsequence,
     OTSContext,
-    OTSContextSnapshot,
     OTSDecision,
     OTSEntity,
     OTSMessage,
@@ -29,7 +43,6 @@ from letta.trajectories.ots.models import (
     OTSSystemMessage,
     OTSTrajectory,
     OTSTurn,
-    OTSUser,
 )
 
 logger = get_logger(__name__)
@@ -37,56 +50,72 @@ logger = get_logger(__name__)
 
 class OTSAdapter:
     """
-    Converts Letta trajectories to Open Trajectory Specification format.
+    Converts Letta runs to Open Trajectory Specification format.
+
+    Letta runs are the native format. OTS is the standardized output for
+    continual learning, display, and analysis.
 
     Usage:
-        adapter = OTSAdapter()
-        ots_trajectory = adapter.from_letta_trajectory(letta_trajectory)
+        # From run dict (native Letta format)
+        ots_trajectory = OTSAdapter.from_letta_run(run_data)
+
+        # From Run ORM/schema object
+        ots_trajectory = OTSAdapter.from_run_object(run, steps, messages)
     """
 
-    def __init__(self, decision_extractor=None):
-        """
-        Initialize adapter.
-
-        Args:
-            decision_extractor: Optional DecisionExtractor for enriching decisions
-        """
-        self.decision_extractor = decision_extractor
-
-    def from_letta_trajectory(
-        self,
-        letta_trajectory: LettaTrajectory,
+    @classmethod
+    def from_letta_run(
+        cls,
+        run_data: Dict[str, Any],
+        agent_id: Optional[str] = None,
         extract_decisions: bool = True,
     ) -> OTSTrajectory:
         """
-        Convert a Letta trajectory to OTS format.
+        Convert a Letta run (native format) to OTS.
 
         Args:
-            letta_trajectory: Letta trajectory object
-            extract_decisions: Whether to extract decisions (requires LLM for full extraction)
+            run_data: Run data dict with run_id, metadata, turns, outcome
+            agent_id: Optional agent ID (if not in run_data)
+            extract_decisions: Whether to extract decisions from tool calls
 
         Returns:
             OTSTrajectory object
         """
-        data = letta_trajectory.data
+        adapter = cls()
+
+        # Extract run info
+        run_id = run_data.get("run_id", str(uuid4()))
+        run_metadata = run_data.get("metadata", {})
+        turns_data = run_data.get("turns", [])
+        outcome_data = run_data.get("outcome", {})
+
+        # Infer agent_id from various sources
+        if not agent_id:
+            agent_id = run_metadata.get("agent_id") or "unknown"
 
         # Convert metadata
-        metadata = self._convert_metadata(letta_trajectory, data)
+        metadata = adapter._convert_run_metadata(
+            run_id=run_id,
+            run_metadata=run_metadata,
+            outcome_data=outcome_data,
+            turns_data=turns_data,
+            agent_id=agent_id,
+        )
 
-        # Convert context
-        context = self._convert_context(data)
+        # Extract context (entities, resources from tool calls)
+        context = adapter._extract_context(turns_data)
 
-        # Convert system message
-        system_message = self._extract_system_message(data)
+        # Extract system message if present
+        system_message = adapter._extract_system_message(turns_data)
 
         # Convert turns
-        turns = self._convert_turns(data, extract_decisions)
+        turns = adapter._convert_turns(turns_data, extract_decisions)
 
-        # Get final reward from outcome score
-        final_reward = letta_trajectory.outcome_score
+        # Calculate final reward from outcome confidence
+        final_reward = outcome_data.get("confidence")
 
         return OTSTrajectory(
-            trajectory_id=str(letta_trajectory.id),
+            trajectory_id=run_id,
             version="0.1-draft",
             metadata=metadata,
             context=context,
@@ -95,237 +124,246 @@ class OTSAdapter:
             final_reward=final_reward,
         )
 
-    def _convert_metadata(
+    def _convert_run_metadata(
         self,
-        letta_trajectory: LettaTrajectory,
-        data: Dict[str, Any],
+        run_id: str,
+        run_metadata: Dict[str, Any],
+        outcome_data: Dict[str, Any],
+        turns_data: List[Dict[str, Any]],
+        agent_id: str,
     ) -> OTSMetadata:
-        """Convert Letta trajectory to OTS metadata."""
-        letta_metadata = data.get("metadata", {})
-        outcome_data = data.get("outcome", {})
-
-        # Determine outcome type
-        outcome_type = self._map_outcome_type(outcome_data)
-
-        # Get timestamps
-        start_time = letta_metadata.get("start_time")
-        end_time = letta_metadata.get("end_time")
+        """Convert run metadata to OTS metadata."""
+        # Parse timestamps
+        start_time = run_metadata.get("start_time")
+        end_time = run_metadata.get("end_time")
 
         timestamp_start = (
             datetime.fromisoformat(start_time.replace("Z", "+00:00"))
             if start_time
-            else letta_trajectory.created_at
+            else datetime.utcnow()
         )
         timestamp_end = (
-            datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            datetime.fromisoformat(str(end_time).replace("Z", "+00:00"))
             if end_time
             else None
         )
 
         # Calculate duration
         duration_ms = None
-        if letta_metadata.get("duration_ns"):
-            duration_ms = letta_metadata["duration_ns"] / 1_000_000
+        if run_metadata.get("duration_ns"):
+            duration_ms = run_metadata["duration_ns"] / 1_000_000
 
-        # Build task description from available sources
-        task_description = self._infer_task_description(data, letta_trajectory)
+        # Map outcome
+        outcome_type = self._map_outcome_type(outcome_data)
+
+        # Infer task description from first user message
+        task_description = self._infer_task_description(turns_data)
+
+        # Get model info
+        models = run_metadata.get("models", [])
+        framework = "letta"
 
         return OTSMetadata(
             task_description=task_description,
-            domain=letta_trajectory.domain_type,
+            domain=None,  # Could be set by caller
             timestamp_start=timestamp_start,
             timestamp_end=timestamp_end,
             duration_ms=duration_ms,
-            agent_id=str(letta_trajectory.agent_id),
-            framework="letta",
-            environment=None,  # Could infer from run metadata
+            agent_id=agent_id,
+            framework=framework,
+            environment=models[0] if models else None,
             outcome=outcome_type,
-            feedback_score=letta_trajectory.outcome_score,
+            feedback_score=outcome_data.get("confidence"),
             human_reviewed=False,
-            tags=letta_trajectory.tags or [],
+            tags=[],
             parent_trajectory_id=None,
         )
 
     def _map_outcome_type(self, outcome_data: Dict[str, Any]) -> OutcomeType:
-        """Map Letta outcome to OTS outcome type."""
-        # Check new format first
+        """Map run outcome to OTS outcome type."""
         execution = outcome_data.get("execution", {})
-        status = execution.get("status") or outcome_data.get("type")
+        status = execution.get("status") or outcome_data.get("type", "")
 
         if status in ["completed", "success"]:
             return OutcomeType.SUCCESS
-        elif status in ["incomplete", "partial_success"]:
+        elif status in ["partial_success", "incomplete"]:
             return OutcomeType.PARTIAL_SUCCESS
         else:
             return OutcomeType.FAILURE
 
-    def _infer_task_description(
-        self,
-        data: Dict[str, Any],
-        letta_trajectory: LettaTrajectory,
-    ) -> str:
-        """Infer task description from available sources."""
-        # Use searchable summary if available
-        if letta_trajectory.searchable_summary:
-            return letta_trajectory.searchable_summary
-
-        # Try to get from first user message
-        turns = data.get("turns", [])
-        for turn in turns:
+    def _infer_task_description(self, turns_data: List[Dict[str, Any]]) -> str:
+        """Infer task description from first user message."""
+        for turn in turns_data:
             for msg in turn.get("messages", []):
                 if msg.get("role") == "user":
                     content = msg.get("content", [])
-                    if content and isinstance(content, list):
-                        for c in content:
-                            if isinstance(c, dict) and c.get("text"):
-                                return c["text"][:500]  # Truncate
-                            elif isinstance(c, str):
-                                return c[:500]
-                    elif isinstance(content, str):
-                        return content[:500]
+                    text = self._extract_text_from_content(content)
+                    if text:
+                        return text[:500]  # Truncate
 
         return "Unknown task"
 
-    def _convert_context(self, data: Dict[str, Any]) -> OTSContext:
-        """Convert Letta data to OTS context."""
-        # Extract entities from tool results and metadata
-        entities = self._extract_entities(data)
-        resources = self._extract_resources(data)
+    def _extract_text_from_content(self, content: Any) -> str:
+        """Extract text from various content formats."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text" and item.get("text"):
+                        return item["text"]
+                    if item.get("text"):
+                        return item["text"]
+                elif isinstance(item, str):
+                    return item
+        return ""
+
+    def _extract_context(self, turns_data: List[Dict[str, Any]]) -> OTSContext:
+        """Extract context (entities, resources) from turns."""
+        entities = []
+        resources = []
+        seen_entity_ids = set()
+        seen_uris = set()
+
+        for turn in turns_data:
+            for msg in turn.get("messages", []):
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "tool_call":
+                            # Extract from tool calls
+                            tool_calls = item.get("tool_calls", [])
+                            for tc in tool_calls:
+                                self._extract_entities_from_tool_call(
+                                    tc, entities, seen_entity_ids
+                                )
+                                self._extract_resources_from_tool_call(
+                                    tc, resources, seen_uris
+                                )
+
+                # Also check top-level tool_calls
+                tool_calls = msg.get("tool_calls", [])
+                for tc in tool_calls:
+                    self._extract_entities_from_tool_call(tc, entities, seen_entity_ids)
+                    self._extract_resources_from_tool_call(tc, resources, seen_uris)
 
         return OTSContext(
             referrer=None,
-            user=None,  # Could extract from run metadata
+            user=None,
             entities=entities,
             resources=resources,
             custom_context=None,
         )
 
-    def _extract_entities(self, data: Dict[str, Any]) -> List[OTSEntity]:
-        """Extract entities from trajectory data."""
-        entities = []
-        seen_ids = set()
+    def _extract_entities_from_tool_call(
+        self,
+        tc: Dict[str, Any],
+        entities: List[OTSEntity],
+        seen_ids: set,
+    ):
+        """Extract entities from a tool call."""
+        func = tc.get("function", {})
+        name = func.get("name", "")
+        args = self._parse_arguments(func.get("arguments", {}))
 
-        # Look for entities in tool results
-        for turn in data.get("turns", []):
-            for msg in turn.get("messages", []):
-                # Check tool calls for entity references
-                for tc in msg.get("tool_calls", []):
-                    func = tc.get("function", {})
-                    name = func.get("name", "")
+        # DSF-specific entity extraction
+        if name in ["world_manager", "story_manager", "asset_manager"]:
+            for key in ["world_id", "story_id", "asset_id", "id"]:
+                if key in args and args[key] not in seen_ids:
+                    entity_type = key.replace("_id", "")
+                    entities.append(OTSEntity(
+                        type=entity_type,
+                        id=args[key],
+                        name=args.get("name"),
+                        metadata=None,
+                    ))
+                    seen_ids.add(args[key])
 
-                    # DSF-specific: world_manager, story_manager
-                    if name in ["world_manager", "story_manager"]:
-                        args = func.get("arguments", {})
-                        if isinstance(args, str):
-                            try:
-                                import json
-                                args = json.loads(args)
-                            except:
-                                args = {}
+    def _extract_resources_from_tool_call(
+        self,
+        tc: Dict[str, Any],
+        resources: List[OTSResource],
+        seen_uris: set,
+    ):
+        """Extract resources from a tool call."""
+        func = tc.get("function", {})
+        args = self._parse_arguments(func.get("arguments", {}))
 
-                        # Extract world_id or story_id
-                        for key in ["world_id", "story_id", "id"]:
-                            if key in args and args[key] not in seen_ids:
-                                entity_type = "world" if "world" in key else "story"
-                                entities.append(OTSEntity(
-                                    type=entity_type,
-                                    id=args[key],
-                                    name=args.get("name"),
-                                    metadata=None,
-                                ))
-                                seen_ids.add(args[key])
+        for key in ["file_path", "path", "url", "uri"]:
+            if key in args and args[key] not in seen_uris:
+                resource_type = "url" if key == "url" else "file"
+                resources.append(OTSResource(
+                    type=resource_type,
+                    uri=args[key],
+                    accessed_at=None,
+                ))
+                seen_uris.add(args[key])
 
-        return entities
+    def _parse_arguments(self, args: Any) -> Dict[str, Any]:
+        """Parse tool call arguments."""
+        if isinstance(args, dict):
+            return args
+        if isinstance(args, str):
+            try:
+                import json
+                return json.loads(args)
+            except:
+                return {"raw": args}
+        return {}
 
-    def _extract_resources(self, data: Dict[str, Any]) -> List[OTSResource]:
-        """Extract resources from trajectory data."""
-        resources = []
-        seen_uris = set()
-
-        # Look for file/URL references in tool calls
-        for turn in data.get("turns", []):
-            for msg in turn.get("messages", []):
-                for tc in msg.get("tool_calls", []):
-                    func = tc.get("function", {})
-                    args = func.get("arguments", {})
-                    if isinstance(args, str):
-                        try:
-                            import json
-                            args = json.loads(args)
-                        except:
-                            args = {}
-
-                    # Look for file paths or URLs
-                    for key in ["file_path", "path", "url", "uri"]:
-                        if key in args and args[key] not in seen_uris:
-                            resource_type = "url" if key == "url" else "file"
-                            resources.append(OTSResource(
-                                type=resource_type,
-                                uri=args[key],
-                                accessed_at=None,
-                            ))
-                            seen_uris.add(args[key])
-
-        return resources
-
-    def _extract_system_message(self, data: Dict[str, Any]) -> Optional[OTSSystemMessage]:
-        """Extract system message from trajectory data."""
-        turns = data.get("turns", [])
-        if not turns:
+    def _extract_system_message(
+        self,
+        turns_data: List[Dict[str, Any]],
+    ) -> Optional[OTSSystemMessage]:
+        """Extract system message from turns."""
+        if not turns_data:
             return None
 
-        # Look for system message in first turn
-        for msg in turns[0].get("messages", []):
+        for msg in turns_data[0].get("messages", []):
             if msg.get("role") == "system":
                 content = msg.get("content", [])
-                if content:
-                    text = ""
-                    if isinstance(content, list):
-                        for c in content:
-                            if isinstance(c, dict) and c.get("text"):
-                                text = c["text"]
-                                break
-                    elif isinstance(content, str):
-                        text = content
-
-                    if text:
-                        timestamp = msg.get("timestamp")
-                        return OTSSystemMessage(
-                            content=text,
-                            timestamp=(
-                                datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                                if timestamp
-                                else datetime.utcnow()
-                            ),
-                        )
+                text = self._extract_text_from_content(content)
+                if text:
+                    timestamp = msg.get("timestamp")
+                    return OTSSystemMessage(
+                        content=text,
+                        timestamp=(
+                            datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                            if timestamp
+                            else datetime.utcnow()
+                        ),
+                    )
 
         return None
 
     def _convert_turns(
         self,
-        data: Dict[str, Any],
+        turns_data: List[Dict[str, Any]],
         extract_decisions: bool,
     ) -> List[OTSTurn]:
-        """Convert Letta turns to OTS turns."""
+        """Convert run turns to OTS turns."""
         ots_turns = []
-        letta_turns = data.get("turns", [])
 
-        for i, turn in enumerate(letta_turns):
+        for i, turn in enumerate(turns_data):
             # Convert messages
             messages = self._convert_messages(turn.get("messages", []))
 
-            # Extract decisions (programmatic only for now)
+            # Extract decisions from tool calls
             decisions = []
             if extract_decisions:
-                decisions = self._extract_tool_decisions(turn, i)
+                decisions = self._extract_decisions(turn, i)
+
+            # Get timing info
+            step_id = turn.get("step_id", str(uuid4()))
+            timestamp = self._parse_turn_timestamp(turn)
 
             ots_turn = OTSTurn(
                 turn_id=i,
-                span_id=turn.get("step_id", str(uuid4())),
+                span_id=step_id,
                 parent_span_id=None,
-                timestamp=self._parse_timestamp(turn),
+                timestamp=timestamp,
                 duration_ms=None,
-                error=False,
+                error=turn.get("error", False),
                 turn_reward=None,
                 messages=messages,
                 decisions=decisions,
@@ -335,14 +373,20 @@ class OTSAdapter:
 
         return ots_turns
 
-    def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[OTSMessage]:
-        """Convert Letta messages to OTS messages."""
+    def _convert_messages(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[OTSMessage]:
+        """Convert run messages to OTS messages."""
         ots_messages = []
 
         for msg in messages:
             role = self._map_role(msg.get("role", "assistant"))
             content = self._convert_content(msg)
             timestamp = msg.get("timestamp")
+
+            # Extract reasoning if present
+            reasoning = self._extract_reasoning(msg)
 
             ots_msg = OTSMessage(
                 message_id=msg.get("message_id", str(uuid4())),
@@ -353,7 +397,7 @@ class OTSAdapter:
                     else datetime.utcnow()
                 ),
                 content=content,
-                reasoning=None,  # Would need LLM extraction
+                reasoning=reasoning,
                 visibility=None,
                 context_snapshot=None,
             )
@@ -373,11 +417,11 @@ class OTSAdapter:
         return role_map.get(role, MessageRole.ASSISTANT)
 
     def _convert_content(self, msg: Dict[str, Any]) -> OTSMessageContent:
-        """Convert Letta message content to OTS format."""
+        """Convert message content to OTS format."""
         content = msg.get("content", [])
         tool_calls = msg.get("tool_calls", [])
 
-        # Check for tool calls
+        # Handle tool calls
         if tool_calls:
             return OTSMessageContent(
                 type=ContentType.TOOL_CALL,
@@ -385,82 +429,82 @@ class OTSAdapter:
                 text=None,
             )
 
-        # Check for tool response
+        # Handle tool response
         if msg.get("tool_call_id"):
-            text = ""
-            if isinstance(content, list):
-                for c in content:
-                    if isinstance(c, dict) and c.get("text"):
-                        text = c["text"]
-                        break
-            elif isinstance(content, str):
-                text = content
-
+            text = self._extract_text_from_content(content)
             return OTSMessageContent(
                 type=ContentType.TOOL_RESPONSE,
                 data={"tool_call_id": msg["tool_call_id"]},
                 text=text,
             )
 
-        # Regular text content
-        text = ""
+        # Handle regular content (may have reasoning + text)
+        text_parts = []
         if isinstance(content, list):
-            for c in content:
-                if isinstance(c, dict) and c.get("text"):
-                    text = c["text"]
-                    break
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                    # Skip reasoning items - handled separately
+                elif isinstance(item, str):
+                    text_parts.append(item)
         elif isinstance(content, str):
-            text = content
+            text_parts.append(content)
 
         return OTSMessageContent(
             type=ContentType.TEXT,
             data=None,
-            text=text,
+            text="\n".join(text_parts) if text_parts else None,
         )
 
-    def _extract_tool_decisions(
+    def _extract_reasoning(self, msg: Dict[str, Any]) -> Optional[str]:
+        """Extract reasoning/thinking from message content."""
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "reasoning":
+                    return item.get("text")
+        return None
+
+    def _extract_decisions(
         self,
         turn: Dict[str, Any],
         turn_id: int,
     ) -> List[OTSDecision]:
-        """
-        Extract decisions from tool calls (programmatic extraction).
-
-        This extracts the structured part of decisions. LLM extraction
-        for alternatives/rationale is done separately by DecisionExtractor.
-        """
+        """Extract decisions from tool calls in a turn."""
         decisions = []
+        messages = turn.get("messages", [])
 
-        for msg in turn.get("messages", []):
+        for msg in messages:
             tool_calls = msg.get("tool_calls", [])
+
+            # Also check content for tool_call type
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_call":
+                        tool_calls.extend(item.get("tool_calls", []))
 
             for i, tc in enumerate(tool_calls):
                 func = tc.get("function", {})
                 tool_name = func.get("name", "unknown")
-                arguments = func.get("arguments", {})
+                arguments = self._parse_arguments(func.get("arguments", {}))
 
-                if isinstance(arguments, str):
-                    try:
-                        import json
-                        arguments = json.loads(arguments)
-                    except:
-                        arguments = {"raw": arguments}
-
-                # Find corresponding tool result
+                # Find tool result
                 success, result_summary = self._find_tool_result(
-                    turn.get("messages", []),
+                    messages,
                     tc.get("id"),
                 )
 
                 decision = OTSDecision(
                     decision_id=f"t{turn_id}-d{len(decisions)}",
                     decision_type=DecisionType.TOOL_SELECTION,
-                    state=None,  # Would need LLM to extract context summary
-                    alternatives=None,  # Would need LLM to extract
+                    state=None,  # Requires LLM extraction
+                    alternatives=None,  # Requires LLM extraction
                     choice=OTSChoice(
                         action=tool_name,
                         arguments=arguments,
-                        rationale=None,  # Would need LLM to extract
+                        rationale=None,  # Requires LLM extraction
                         confidence=None,
                     ),
                     consequence=OTSConsequence(
@@ -488,25 +532,25 @@ class OTSAdapter:
         for msg in messages:
             if msg.get("tool_call_id") == tool_call_id:
                 content = msg.get("content", [])
-                text = ""
-                if isinstance(content, list):
-                    for c in content:
-                        if isinstance(c, dict) and c.get("text"):
-                            text = c["text"]
-                            break
-                elif isinstance(content, str):
-                    text = content
+                text = self._extract_text_from_content(content)
 
                 # Check for error indicators
-                is_error = "error" in text.lower() or "exception" in text.lower()
+                is_error = any(
+                    indicator in text.lower()
+                    for indicator in ["error", "exception", "failed", "failure"]
+                )
 
                 return not is_error, text[:500] if text else None
 
+            # Also check role=tool messages
+            if msg.get("role") == "tool":
+                # Tool messages may have tool_call_id differently
+                pass
+
         return True, None
 
-    def _parse_timestamp(self, turn: Dict[str, Any]) -> datetime:
-        """Parse timestamp from turn or message."""
-        # Try turn-level timestamp
+    def _parse_turn_timestamp(self, turn: Dict[str, Any]) -> datetime:
+        """Parse timestamp from turn."""
         messages = turn.get("messages", [])
         if messages:
             ts = messages[0].get("timestamp")
