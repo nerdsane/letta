@@ -58,11 +58,21 @@ class Trajectory(TrajectoryBase):
     outcome_score: Optional[float] = Field(None, description="Quality score 0-1 (LLM-generated)", ge=0.0, le=1.0)
     score_reasoning: Optional[str] = Field(None, description="Explanation of the outcome score (LLM-generated)")
 
-    # LLM-extracted labels and metadata
+    # LLM-extracted labels and metadata (Letta enrichment via gpt-4o-mini)
     tags: Optional[List[str]] = Field(None, description="Semantic tags for filtering (LLM-generated)")
     task_category: Optional[str] = Field(None, description="Primary task classification (LLM-generated)")
     complexity_level: Optional[str] = Field(None, description="Task complexity (LLM-generated)")
     trajectory_metadata: Optional[Dict[str, Any]] = Field(None, description="Flexible metadata extracted by LLM")
+
+    # OTS LLM-extracted data (rich decisions/entities via GPT-5 mini)
+    ots_decisions: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="OTS-style decisions with rationale/alternatives/confidence (LLM-extracted with GPT-5 mini)"
+    )
+    ots_entities: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Entities extracted from trajectory: services, files, users, concepts, etc. (LLM + programmatic)"
+    )
 
     # Vector embedding (not included in API responses - internal only)
     # embedding: Optional[List[float]] = Field(None, exclude=True)
@@ -215,32 +225,80 @@ class TrajectoryShareUpdate(LettaBase):
     model_config = ConfigDict(extra="forbid")
 
 
+class AlternativeConsidered(LettaBase):
+    """An alternative that was considered but not chosen."""
+
+    action: str = Field(..., description="The alternative action")
+    rationale: Optional[str] = Field(None, description="Why it was considered")
+    rejected_reason: Optional[str] = Field(None, description="Why it was rejected")
+
+
 class DecisionSummary(LettaBase):
     """
     Summary of a decision (tool call) extracted from trajectory data.
     Used for UI display of decision-level details.
+
+    When OTS LLM extraction is enabled (GPT-5 mini), includes rich data:
+    - rationale: Why this decision was made
+    - alternatives_considered: What other options were weighed
+    - confidence: How confident the agent was (0-1)
+    - context_summary: What the agent understood at decision time
     """
 
     decision_id: str = Field(..., description="Unique identifier for this decision")
-    turn_index: int = Field(..., description="Which turn this decision occurred in")
-    decision_type: str = Field(..., description="Type: tool_selection, parameter_choice, etc.")
+    turn_index: int = Field(0, description="Which turn this decision occurred in")
+    decision_type: str = Field(..., description="Type: tool_selection, parameter_choice, reasoning_step")
     action: str = Field(..., description="The action taken (tool name or choice)")
     arguments: Optional[Dict[str, Any]] = Field(None, description="Arguments passed to the action")
-    rationale: Optional[str] = Field(None, description="Reasoning behind this decision (if available)")
+
+    # LLM-extracted rich data (from OTS with GPT-5 mini)
+    rationale: Optional[str] = Field(None, description="Reasoning behind this decision (LLM-extracted)")
+    alternatives_considered: Optional[List[AlternativeConsidered]] = Field(
+        None, description="Alternatives that were weighed (LLM-extracted)"
+    )
+    confidence: Optional[float] = Field(
+        None, description="Agent's confidence in this decision 0-1 (LLM-extracted)", ge=0.0, le=1.0
+    )
+    context_summary: Optional[str] = Field(
+        None, description="What the agent understood at this point (LLM-extracted)"
+    )
+
+    # Outcome
     success: bool = Field(True, description="Whether this decision succeeded")
     error_type: Optional[str] = Field(None, description="Type of error if failed")
     result_summary: Optional[str] = Field(None, description="Brief summary of the result")
 
 
+class EntitySummary(LettaBase):
+    """
+    An entity mentioned or operated on in the trajectory.
+    Extracted via OTS LLM processing.
+    """
+
+    entity_type: str = Field(..., description="Type: service, file, user, concept, resource, tool, world, story, rule")
+    entity_id: str = Field(..., description="Unique identifier or descriptive slug")
+    name: str = Field(..., description="Human-readable name")
+    metadata: Optional[Dict[str, Any]] = Field(
+        None, description="Additional context (mentioned_in, context, etc.)"
+    )
+
+
 class TrajectoryWithDecisions(Trajectory):
     """
-    Trajectory with extracted OTS-style decisions for UI display.
+    Trajectory with extracted OTS-style decisions and entities for UI display.
 
-    Includes all standard trajectory fields plus a decisions list
-    that breaks down individual tool calls with success/failure status.
+    Includes all standard trajectory fields plus:
+    - decisions: Individual choices with rationale, alternatives, confidence
+    - entities: Things mentioned/operated on (services, files, concepts, etc.)
+
+    Rich data available when OTS LLM extraction (GPT-5 mini) is enabled.
     """
 
     decisions: List[DecisionSummary] = Field(
         default_factory=list,
-        description="List of decisions (tool calls) extracted from trajectory"
+        description="List of decisions extracted from trajectory (rich data when OTS LLM enabled)"
+    )
+    entities: List[EntitySummary] = Field(
+        default_factory=list,
+        description="List of entities extracted from trajectory (LLM + programmatic)"
     )

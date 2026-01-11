@@ -107,6 +107,16 @@ class Trajectory(SqlalchemyBase, OrganizationMixin):
         JSON, nullable=True, doc="Flexible metadata extracted by LLM: interaction patterns, tool usage, etc."
     )
 
+    # OTS LLM-extracted data (rich decisions/entities via GPT-5 mini)
+    ots_decisions: Mapped[Optional[list]] = mapped_column(
+        JSON, nullable=True,
+        doc="OTS-style decisions with rationale/alternatives/confidence (LLM-extracted with GPT-5 mini)"
+    )
+    ots_entities: Mapped[Optional[list]] = mapped_column(
+        JSON, nullable=True,
+        doc="Entities extracted from trajectory: services, files, users, concepts (LLM + programmatic)"
+    )
+
     # Vector embedding for similarity search (from searchable_summary)
     if settings.database_engine is DatabaseChoice.POSTGRES:
         from pgvector.sqlalchemy import Vector

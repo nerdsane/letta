@@ -1,26 +1,40 @@
 """
-Decision extractor for extracting decisions from agent turns.
+Decision and entity extractor for extracting decisions and entities from agent turns.
 
 Combines:
 1. Programmatic extraction from tool calls (free, immediate)
-2. LLM extraction from reasoning (required for full decision trace)
+2. LLM extraction from reasoning (required for full decision trace and entities)
+
+In 'full' mode, extracts both:
+- Decisions: What the agent chose to do + reasoning + alternatives
+- Entities: Things mentioned/referenced in the conversation + reasoning
 """
 
 import json
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from letta.log import get_logger
 from letta.trajectories.ots.models import (
+    ContentType,
     DecisionType,
     OTSAlternative,
     OTSChoice,
     OTSConsequence,
     OTSDecision,
     OTSDecisionState,
+    OTSEntity,
     OTSTurn,
 )
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ExtractionResult:
+    """Result of full extraction containing both decisions and entities."""
+    decisions: List[OTSDecision]
+    entities: List[OTSEntity]
 
 
 # Prompt for LLM decision extraction
@@ -57,6 +71,58 @@ Output JSON array:
 Only include EXPLICIT decision points where the agent weighed options.
 Do not invent decisions that aren't in the reasoning.
 Return empty array [] if no explicit decision points found."""
+
+
+# Combined prompt for extracting both decisions and entities
+FULL_EXTRACTION_PROMPT = """Analyze this agent turn and extract:
+1. DECISIONS: Explicit decision points where the agent weighed options
+2. ENTITIES: Things mentioned or operated on
+
+## User Message
+{user_message}
+
+## Agent Reasoning
+{reasoning}
+
+## Tool Calls Made
+{tool_calls}
+
+## Output Format
+Return a JSON object with two arrays:
+
+{{
+  "decisions": [
+    {{
+      "decision_type": "reasoning_step | tool_selection | parameter_choice",
+      "relates_to_tool_call": "tool_name or null",
+      "state": {{ "context_summary": "what the agent understood" }},
+      "alternatives": {{
+        "considered": [{{ "action": "...", "rejected_reason": "..." }}]
+      }},
+      "choice": {{
+        "action": "what was decided",
+        "rationale": "why",
+        "confidence": 0.0-1.0 or null
+      }}
+    }}
+  ],
+  "entities": [
+    {{
+      "type": "service | file | user | concept | resource | tool | world | story | rule",
+      "id": "identifier or descriptive slug",
+      "name": "human-readable name",
+      "metadata": {{
+        "mentioned_in": "user_message | reasoning | tool_call | tool_result",
+        "context": "brief description"
+      }}
+    }}
+  ]
+}}
+
+Rules:
+- Only include EXPLICIT decision points and entities
+- Do not invent things not in the text
+- Return {{"decisions": [], "entities": []}} if nothing found"""
 
 
 class DecisionExtractor:
@@ -381,3 +447,88 @@ class DecisionExtractor:
             mode = "fast"
 
         return self.extract_from_turn(turn, mode=mode)
+
+    async def extract_full(self, turn: OTSTurn) -> ExtractionResult:
+        """
+        Extract both decisions and entities from a turn using LLM.
+
+        This is the recommended method for full OTS extraction with rich data:
+        - Decisions with rationale, alternatives, confidence
+        - Entities (services, files, users, concepts, resources)
+
+        Args:
+            turn: OTS turn to extract from
+
+        Returns:
+            ExtractionResult containing decisions and entities
+        """
+        # Start with programmatic extraction
+        tool_decisions = self._extract_from_tool_calls(turn)
+
+        if not self.llm_client:
+            logger.warning("No LLM client provided. Returning programmatic extraction only.")
+            return ExtractionResult(decisions=tool_decisions, entities=[])
+
+        # Get reasoning and user message for context
+        reasoning = self._extract_reasoning_text(turn) or ""
+        user_message = self._extract_user_message(turn) or ""
+        tool_names = [d.choice.action for d in tool_decisions]
+
+        # Build prompt
+        prompt = FULL_EXTRACTION_PROMPT.format(
+            user_message=user_message,
+            reasoning=reasoning,
+            tool_calls=json.dumps(tool_names),
+        )
+
+        try:
+            # Call LLM for full extraction
+            response = await self.llm_client.generate(
+                prompt=prompt,
+                response_format="json",
+            )
+
+            # Parse response
+            extracted = json.loads(response)
+            if not isinstance(extracted, dict):
+                logger.warning("LLM returned non-dict response for full extraction")
+                return ExtractionResult(decisions=tool_decisions, entities=[])
+
+            # Extract decisions and entities from response
+            llm_decisions = extracted.get("decisions", [])
+            llm_entities = extracted.get("entities", [])
+
+            # Merge LLM decisions with tool decisions
+            merged_decisions = self._merge_decisions(tool_decisions, llm_decisions, turn.turn_id)
+
+            # Convert entity dicts to OTSEntity objects
+            entities = self._parse_entities(llm_entities)
+
+            return ExtractionResult(decisions=merged_decisions, entities=entities)
+
+        except Exception as e:
+            logger.warning(f"LLM full extraction failed: {e}")
+            return ExtractionResult(decisions=tool_decisions, entities=[])
+
+    def _extract_user_message(self, turn: OTSTurn) -> Optional[str]:
+        """Extract user message text from turn."""
+        for msg in turn.messages:
+            if msg.role == "user" and msg.content.text:
+                return msg.content.text
+        return None
+
+    def _parse_entities(self, entity_dicts: List[Dict[str, Any]]) -> List[OTSEntity]:
+        """Parse entity dictionaries into OTSEntity objects."""
+        entities = []
+        for e in entity_dicts:
+            try:
+                entity = OTSEntity(
+                    entity_type=e.get("type", "concept"),
+                    entity_id=e.get("id", ""),
+                    name=e.get("name", ""),
+                    metadata=e.get("metadata", {}),
+                )
+                entities.append(entity)
+            except Exception as ex:
+                logger.warning(f"Failed to parse entity: {e}, error: {ex}")
+        return entities

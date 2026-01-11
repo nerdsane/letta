@@ -5,10 +5,11 @@ This module handles:
 1. Generating searchable summaries from trajectory data
 2. Scoring trajectories based on outcomes
 3. Generating embeddings for similarity search
+4. OTS decision/entity extraction with LLM enrichment
 """
 
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from openai import AsyncOpenAI
@@ -16,6 +17,10 @@ from openai import AsyncOpenAI
 from letta.constants import MAX_EMBEDDING_DIM
 from letta.log import get_logger
 from letta.settings import model_settings
+from letta.trajectories.ots.adapter import OTSAdapter
+from letta.trajectories.ots.decision_extractor import DecisionExtractor
+from letta.trajectories.ots.dsf_entity_extractor import DSFEntityExtractor
+from letta.trajectories.ots.llm_client import OpenAILLMClient
 
 logger = get_logger(__name__)
 
@@ -290,12 +295,140 @@ Be specific and descriptive. These labels will be used for filtering, pattern de
             # Fallback to basic extraction
             return self._create_fallback_labels(trajectory_data)
 
-    async def process_trajectory(self, trajectory_data: Dict) -> Tuple[str, float, str, List[str], str, str, Dict, Optional[List[float]]]:
+    async def extract_ots_decisions_and_entities(
+        self,
+        trajectory_data: Dict,
+        use_llm: bool = True,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Full processing pipeline: generate summary, score, labels, metadata, and embedding.
+        Extract OTS-style decisions and entities from trajectory.
+
+        Uses OTS's DecisionExtractor with optional LLM enrichment for:
+        - Decisions with rationale, alternatives, confidence
+        - Entities (services, files, users, concepts, resources)
+
+        Args:
+            trajectory_data: Raw trajectory data dict
+            use_llm: Whether to use LLM for rich extraction (default: True)
 
         Returns:
-            (summary, score, reasoning, tags, task_category, complexity_level, trajectory_metadata, embedding)
+            (decisions, entities) as lists of dicts
+        """
+        try:
+            # Convert to OTS trajectory format
+            ots_trajectory = OTSAdapter.from_letta_trajectory(trajectory_data)
+
+            # Create extractor with optional LLM client
+            llm_client = OpenAILLMClient() if use_llm else None
+            extractor = DecisionExtractor(llm_client=llm_client)
+
+            # Extract decisions and entities from each turn
+            all_decisions = []
+            all_entities = []
+
+            for turn in ots_trajectory.turns:
+                if use_llm and llm_client:
+                    # Full extraction with LLM (rich data)
+                    result = await extractor.extract_full(turn)
+                    all_decisions.extend([self._decision_to_dict(d) for d in result.decisions])
+                    all_entities.extend([self._entity_to_dict(e) for e in result.entities])
+                else:
+                    # Fast extraction (programmatic only)
+                    decisions = extractor.extract_from_turn_sync(turn, mode="fast")
+                    all_decisions.extend([self._decision_to_dict(d) for d in decisions])
+
+            # Also run DSF-specific entity extraction (programmatic, no LLM needed)
+            try:
+                dsf_extractor = DSFEntityExtractor()
+                dsf_entities = dsf_extractor.extract_all(ots_trajectory)
+                all_entities.extend([self._entity_to_dict(e) for e in dsf_entities])
+            except Exception as dsf_err:
+                logger.warning(f"DSF entity extraction failed: {dsf_err}")
+
+            # Deduplicate entities by ID
+            seen_ids = set()
+            unique_entities = []
+            for e in all_entities:
+                entity_id = e.get("entity_id") or e.get("id", "")
+                if entity_id and entity_id not in seen_ids:
+                    unique_entities.append(e)
+                    seen_ids.add(entity_id)
+
+            return all_decisions, unique_entities
+
+        except Exception as e:
+            logger.error(f"OTS extraction failed: {e}")
+            return [], []
+
+    def _decision_to_dict(self, decision) -> Dict[str, Any]:
+        """Convert OTSDecision to serializable dict."""
+        try:
+            # Use model_dump if available (Pydantic v2)
+            if hasattr(decision, "model_dump"):
+                return decision.model_dump()
+            # Fallback to dict() for dataclass
+            elif hasattr(decision, "__dict__"):
+                return self._serialize_decision(decision)
+            return {}
+        except Exception:
+            return {}
+
+    def _serialize_decision(self, decision) -> Dict[str, Any]:
+        """Manually serialize decision dataclass."""
+        return {
+            "decision_id": decision.decision_id,
+            "decision_type": decision.decision_type.value if hasattr(decision.decision_type, "value") else str(decision.decision_type),
+            "state": {
+                "context_summary": decision.state.context_summary if decision.state else None,
+                "available_actions": decision.state.available_actions if decision.state else [],
+            } if decision.state else None,
+            "alternatives": decision.alternatives,
+            "choice": {
+                "action": decision.choice.action,
+                "arguments": decision.choice.arguments,
+                "rationale": decision.choice.rationale,
+                "confidence": decision.choice.confidence,
+            } if decision.choice else None,
+            "consequence": {
+                "success": decision.consequence.success,
+                "result_summary": decision.consequence.result_summary,
+                "error_type": decision.consequence.error_type,
+            } if decision.consequence else None,
+            "evaluation": decision.evaluation,
+            "credit_assignment": decision.credit_assignment,
+        }
+
+    def _entity_to_dict(self, entity) -> Dict[str, Any]:
+        """Convert OTSEntity to serializable dict."""
+        try:
+            if hasattr(entity, "model_dump"):
+                return entity.model_dump()
+            elif hasattr(entity, "__dict__"):
+                return {
+                    "entity_type": entity.entity_type,
+                    "entity_id": entity.entity_id,
+                    "name": entity.name,
+                    "metadata": entity.metadata,
+                }
+            return {}
+        except Exception:
+            return {}
+
+    async def process_trajectory(
+        self,
+        trajectory_data: Dict,
+        extract_ots: bool = True,
+    ) -> Tuple[str, float, str, List[str], str, str, Dict, Optional[List[float]], List[Dict], List[Dict]]:
+        """
+        Full processing pipeline: generate summary, score, labels, metadata, embedding, and OTS data.
+
+        Args:
+            trajectory_data: Raw trajectory data
+            extract_ots: Whether to extract OTS decisions/entities with LLM (default: True)
+
+        Returns:
+            (summary, score, reasoning, tags, task_category, complexity_level,
+             trajectory_metadata, embedding, ots_decisions, ots_entities)
         """
         # Generate summary
         summary = await self.generate_searchable_summary(trajectory_data)
@@ -309,7 +442,16 @@ Be specific and descriptive. These labels will be used for filtering, pattern de
         # Generate embedding from summary
         embedding = await self.generate_embedding(summary)
 
-        return summary, score, reasoning, tags, task_category, complexity_level, metadata, embedding
+        # Extract OTS decisions and entities
+        ots_decisions = []
+        ots_entities = []
+        if extract_ots:
+            ots_decisions, ots_entities = await self.extract_ots_decisions_and_entities(
+                trajectory_data,
+                use_llm=True,
+            )
+
+        return summary, score, reasoning, tags, task_category, complexity_level, metadata, embedding, ots_decisions, ots_entities
 
     def _create_fallback_summary(self, data: Dict) -> str:
         """Create a basic summary when LLM call fails."""

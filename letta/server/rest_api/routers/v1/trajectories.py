@@ -24,6 +24,7 @@ from letta.schemas.trajectory import (
     TrajectoryUpdate,
     TrajectoryVisibility,
     TrajectoryWithDecisions,
+    EntitySummary,
 )
 from pydantic import BaseModel
 from letta.server.rest_api.dependencies import HeaderParams, get_headers, get_letta_server
@@ -896,8 +897,72 @@ def _extract_decisions_from_trajectory(trajectory: Trajectory) -> List[DecisionS
     """
     Extract OTS-style decisions from trajectory data.
 
-    Analyzes tool calls in each turn and determines success/failure
-    based on subsequent tool response messages.
+    If the trajectory has stored OTS decisions (from GPT-5 mini extraction),
+    use those for rich data (rationale, alternatives, confidence).
+    Otherwise, fall back to programmatic extraction from tool calls.
+    """
+    # Check if we have stored OTS decisions (rich data from LLM extraction)
+    if trajectory.ots_decisions:
+        return _convert_ots_decisions_to_summaries(trajectory.ots_decisions, trajectory.id)
+
+    # Fallback: programmatic extraction from tool calls
+    return _extract_decisions_programmatic(trajectory)
+
+
+def _convert_ots_decisions_to_summaries(ots_decisions: List[Dict], trajectory_id: str) -> List[DecisionSummary]:
+    """
+    Convert stored OTS decisions to DecisionSummary objects.
+
+    OTS decisions have rich data including:
+    - rationale: Why this decision was made
+    - alternatives: What other options were considered
+    - confidence: How confident the agent was
+    - context_summary: What the agent understood at decision time
+    """
+    decisions = []
+    for idx, d in enumerate(ots_decisions):
+        choice = d.get("choice", {}) or {}
+        consequence = d.get("consequence", {}) or {}
+        state = d.get("state", {}) or {}
+        alternatives_data = d.get("alternatives", {})
+
+        # Convert alternatives to AlternativeConsidered objects
+        alternatives_considered = None
+        if alternatives_data and alternatives_data.get("considered"):
+            from letta.schemas.trajectory import AlternativeConsidered
+            alternatives_considered = [
+                AlternativeConsidered(
+                    action=alt.get("action", ""),
+                    rationale=alt.get("rationale"),
+                    rejected_reason=alt.get("rejected_reason"),
+                )
+                for alt in alternatives_data.get("considered", [])
+            ]
+
+        decisions.append(DecisionSummary(
+            decision_id=d.get("decision_id", f"{trajectory_id}-ots-{idx}"),
+            turn_index=d.get("turn_index", 0),
+            decision_type=d.get("decision_type", "tool_selection"),
+            action=choice.get("action", ""),
+            arguments=choice.get("arguments"),
+            rationale=choice.get("rationale"),
+            alternatives_considered=alternatives_considered,
+            confidence=choice.get("confidence"),
+            context_summary=state.get("context_summary"),
+            success=consequence.get("success", True),
+            error_type=consequence.get("error_type"),
+            result_summary=consequence.get("result_summary"),
+        ))
+
+    return decisions
+
+
+def _extract_decisions_programmatic(trajectory: Trajectory) -> List[DecisionSummary]:
+    """
+    Extract decisions programmatically from tool calls in trajectory data.
+
+    This is the fallback when no stored OTS decisions are available.
+    Provides basic decision info without LLM-extracted rationale/alternatives.
     """
     decisions = []
     data = trajectory.data or {}
@@ -948,13 +1013,38 @@ def _extract_decisions_from_trajectory(trajectory: Trajectory) -> List[DecisionS
                     decision_type="tool_selection",
                     action=tool_name,
                     arguments=arguments,
-                    rationale=None,  # Could be extracted from assistant message content
+                    rationale=None,  # Not available without LLM extraction
+                    alternatives_considered=None,
+                    confidence=None,
+                    context_summary=None,
                     success=success,
                     error_type=error_type,
                     result_summary=result_summary,
                 ))
 
     return decisions
+
+
+def _extract_entities_from_trajectory(trajectory: Trajectory) -> List[EntitySummary]:
+    """
+    Extract entities from stored OTS data.
+
+    Returns entities extracted during trajectory processing (LLM + programmatic).
+    Returns empty list if no OTS entities were extracted.
+    """
+    if not trajectory.ots_entities:
+        return []
+
+    entities = []
+    for e in trajectory.ots_entities:
+        entities.append(EntitySummary(
+            entity_type=e.get("entity_type", "concept"),
+            entity_id=e.get("entity_id", ""),
+            name=e.get("name", ""),
+            metadata=e.get("metadata"),
+        ))
+
+    return entities
 
 
 # IMPORTANT: This route must be at the END of the file because it's a catch-all
@@ -964,15 +1054,18 @@ def _extract_decisions_from_trajectory(trajectory: Trajectory) -> List[DecisionS
 async def get_trajectory(
     trajectory_id: str,
     include_decisions: bool = Query(True, description="Include extracted OTS-style decisions"),
+    include_entities: bool = Query(True, description="Include extracted entities"),
     server: SyncServer = Depends(get_letta_server),
     headers: HeaderParams = Depends(get_headers),
 ):
     """
-    Get a single trajectory by ID with optional decision extraction.
+    Get a single trajectory by ID with optional OTS data extraction.
 
-    When include_decisions=True (default), extracts tool calls as OTS-style
-    decisions with success/failure status, enabling detailed analysis of
-    agent behavior at the decision level.
+    When OTS LLM processing is enabled (GPT-5 mini), returns rich data:
+    - decisions: Tool calls with rationale, alternatives considered, confidence
+    - entities: Services, files, concepts, etc. mentioned in the trajectory
+
+    Falls back to programmatic extraction if OTS data not available.
     """
     actor = await server.user_manager.get_actor_or_default_async(actor_id=headers.actor_id)
     trajectory = await server.trajectory_manager.get_trajectory_async(trajectory_id=trajectory_id, actor=actor)
@@ -985,7 +1078,12 @@ async def get_trajectory(
     if include_decisions:
         decisions = _extract_decisions_from_trajectory(trajectory)
 
-    # Return trajectory with decisions
+    # Extract entities if requested
+    entities = []
+    if include_entities:
+        entities = _extract_entities_from_trajectory(trajectory)
+
+    # Return trajectory with decisions and entities
     return TrajectoryWithDecisions(
         id=trajectory.id,
         agent_id=trajectory.agent_id,
@@ -999,6 +1097,8 @@ async def get_trajectory(
         task_category=trajectory.task_category,
         complexity_level=trajectory.complexity_level,
         trajectory_metadata=trajectory.trajectory_metadata,
+        ots_decisions=trajectory.ots_decisions,
+        ots_entities=trajectory.ots_entities,
         processing_status=trajectory.processing_status,
         processing_started_at=trajectory.processing_started_at,
         processing_completed_at=trajectory.processing_completed_at,
@@ -1007,4 +1107,5 @@ async def get_trajectory(
         updated_at=trajectory.updated_at,
         organization_id=trajectory.organization_id,
         decisions=decisions,
+        entities=entities,
     )

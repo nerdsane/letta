@@ -327,12 +327,14 @@ class TrajectoryService:
 
     async def process_trajectory(self, trajectory_id: str) -> Optional[Trajectory]:
         """
-        Process a trajectory with LLM to generate summary, score, and embedding.
+        Process a trajectory with LLM to generate summary, score, embedding, and OTS data.
 
         This is the core LLM-powered processing:
-        1. Generate searchable summary from trajectory data
-        2. Score the trajectory (0-1, with reasoning)
-        3. Generate embedding from summary
+        1. Generate searchable summary from trajectory data (gpt-4o-mini)
+        2. Score the trajectory (0-1, with reasoning) (gpt-4o-mini)
+        3. Extract labels and metadata (tags, category, complexity) (gpt-4o-mini)
+        4. Generate embedding from summary (text-embedding-3-small)
+        5. Extract OTS decisions and entities (GPT-5 mini)
         """
         result = await self.db.execute(select(TrajectoryModel).where(TrajectoryModel.id == trajectory_id))
         trajectory_orm = result.scalar_one_or_none()
@@ -340,14 +342,31 @@ class TrajectoryService:
         if not trajectory_orm:
             return None
 
-        # Process with LLM
-        summary, score, reasoning, embedding = await self.processor.process_trajectory(trajectory_orm.data)
+        # Process with LLM (includes OTS extraction with GPT-5 mini)
+        (
+            summary,
+            score,
+            reasoning,
+            tags,
+            task_category,
+            complexity_level,
+            trajectory_metadata,
+            embedding,
+            ots_decisions,
+            ots_entities,
+        ) = await self.processor.process_trajectory(trajectory_orm.data)
 
         # Update trajectory with processed data
         trajectory_orm.searchable_summary = summary
         trajectory_orm.outcome_score = score
         trajectory_orm.score_reasoning = reasoning
+        trajectory_orm.tags = tags
+        trajectory_orm.task_category = task_category
+        trajectory_orm.complexity_level = complexity_level
+        trajectory_orm.trajectory_metadata = trajectory_metadata
         trajectory_orm.embedding = embedding
+        trajectory_orm.ots_decisions = ots_decisions
+        trajectory_orm.ots_entities = ots_entities
 
         await self.db.commit()
         await self.db.refresh(trajectory_orm)
@@ -363,6 +382,12 @@ class TrajectoryService:
             searchable_summary=trajectory_orm.searchable_summary,
             outcome_score=trajectory_orm.outcome_score,
             score_reasoning=trajectory_orm.score_reasoning,
+            tags=trajectory_orm.tags,
+            task_category=trajectory_orm.task_category,
+            complexity_level=trajectory_orm.complexity_level,
+            trajectory_metadata=trajectory_orm.trajectory_metadata,
+            ots_decisions=trajectory_orm.ots_decisions,
+            ots_entities=trajectory_orm.ots_entities,
             processing_status=trajectory_orm.processing_status,
             processing_started_at=trajectory_orm.processing_started_at,
             processing_completed_at=trajectory_orm.processing_completed_at,

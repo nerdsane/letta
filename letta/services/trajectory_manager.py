@@ -328,13 +328,14 @@ class TrajectoryManager:
 
     async def process_trajectory_async(self, trajectory_id: str, actor: PydanticUser) -> Optional[Trajectory]:
         """
-        Process a trajectory with LLM to generate summary, score, labels, metadata, and embedding.
+        Process a trajectory with LLM to generate summary, score, labels, metadata, embedding, and OTS data.
 
         This is the core LLM-powered processing:
-        1. Generate searchable summary from trajectory data
-        2. Score the trajectory (0-1, with reasoning)
-        3. Extract labels and metadata (tags, category, complexity, patterns)
-        4. Generate embedding from summary
+        1. Generate searchable summary from trajectory data (gpt-4o-mini)
+        2. Score the trajectory (0-1, with reasoning) (gpt-4o-mini)
+        3. Extract labels and metadata (tags, category, complexity, patterns) (gpt-4o-mini)
+        4. Generate embedding from summary (text-embedding-3-small)
+        5. Extract OTS decisions and entities (GPT-5 mini)
         """
         async with db_registry.async_session() as session:
             async with session.begin():
@@ -348,8 +349,19 @@ class TrajectoryManager:
                 if not trajectory_orm:
                     return None
 
-                # Process with LLM
-                summary, score, reasoning, tags, task_category, complexity_level, trajectory_metadata, embedding = await self.processor.process_trajectory(trajectory_orm.data)
+                # Process with LLM (includes OTS extraction with GPT-5 mini)
+                (
+                    summary,
+                    score,
+                    reasoning,
+                    tags,
+                    task_category,
+                    complexity_level,
+                    trajectory_metadata,
+                    embedding,
+                    ots_decisions,
+                    ots_entities,
+                ) = await self.processor.process_trajectory(trajectory_orm.data)
 
                 # Update trajectory with processed data
                 trajectory_orm.searchable_summary = summary
@@ -360,6 +372,8 @@ class TrajectoryManager:
                 trajectory_orm.complexity_level = complexity_level
                 trajectory_orm.trajectory_metadata = trajectory_metadata
                 trajectory_orm.embedding = embedding
+                trajectory_orm.ots_decisions = ots_decisions
+                trajectory_orm.ots_entities = ots_entities
 
                 await session.flush()
                 await session.refresh(trajectory_orm)
