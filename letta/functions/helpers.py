@@ -517,7 +517,8 @@ def generate_model_from_args_json_schema(schema: Dict[str, Any]) -> Type[BaseMod
             nested_models[name] = _create_model_from_schema(name, model_schema, nested_models)
 
     # Create and return the main model
-    return _create_model_from_schema(schema.get("title", "DynamicModel"), schema, nested_models)
+    # Use "Model" as fallback to match datamodel_code_generator's default (see jsonschema.py line 1639)
+    return _create_model_from_schema(schema.get("title", "Model"), schema, nested_models)
 
 
 def _create_model_from_schema(name: str, model_schema: Dict[str, Any], nested_models: Dict[str, Type[BaseModel]] = None) -> Type[BaseModel]:
